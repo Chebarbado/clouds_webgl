@@ -121,7 +121,7 @@ export function buildUI(ctx) {
 
   // --- кинорежим
   const cineOn = $('cineOn'), lensF = $('lensF'), lensN = $('lensN'), lensISO = $('lensISO');
-  const boostSteps = [1, 2, 5, 10, 20, 50, 100, 200, 300];
+  const boostSteps = [1, 10, 100, 300, 1000, 2000, 5000, 10000];
   const boost = slider('Усиление глубины резкости', 0, boostSteps.length - 1, 1, Math.max(0, boostSteps.indexOf(state.dofBoost)),
     (i) => (i === 0 ? '×1 (физически)' : `×${boostSteps[i]}`), (i) => { state.dofBoost = boostSteps[i]; ctx.onLensChanged(); });
   $('dofBoost').append(boost);

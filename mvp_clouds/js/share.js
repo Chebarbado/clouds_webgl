@@ -56,10 +56,10 @@ export function unpackState(a, typeKeys) {
       : Array.isArray(a[15]) && a[15].length === 6 ? a[15].map((v) => v / 100) : null,   // старые ссылки: шаг 10 м
     terrain: typeof a[16]?.[0] === 'string' && /^[a-z]+$/.test(a[16][0]) ? a[16][0] : '',
     imagery: a[16]?.[1] === 'esri' ? 'esri' : 's2',
-    cine: !!a[18]?.[0], focal: num(a[18]?.[1], 10, 200, 55), fstop: num(a[18]?.[2] / 10, 1, 22, 3.2),
+    cine: !!a[18]?.[0], focal: num(a[18]?.[1], 10, 200, 35), fstop: num(a[18]?.[2] / 10, 1, 22, 1.5),
     iso: num(a[18]?.[3], 100, 12800, 800),
     focusUV: [num(a[18]?.[4] / 1000, 0, 1, 0.5), num(a[18]?.[5] / 1000, 0, 1, 0.5)],
-    manualExposure: !!a[18]?.[6], dofBoost: num(a[18]?.[7], 1, 300, 1),
+    manualExposure: !!a[18]?.[6], dofBoost: num(a[18]?.[7], 1, 10000, 2000),
   };
 }
 

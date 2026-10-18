@@ -36,8 +36,10 @@ const state = {
   quality: MOBILE ? 'low' : 'medium', showBox: false,
   terrain: '', imagery: 's2', raiseClouds: true,   // ландшафт: '' — процедурная земля
   // кинорежим: объектив на Super 35 (BMPCC 6K) — фокусное, диафрагма, ISO; фокус — точка экрана
-  cine: false, focal: 55, fstop: 3.2, iso: 800, focusUV: [0.5, 0.5],
-  manualExposure: false, dofBoost: 1,               // ручная экспозиция (иначе — авто, как с ND-фильтром); усиление ГРИП
+  cine: false, focal: 35, fstop: 1.5, iso: 800, focusUV: [0.5, 0.5],
+  // ручная экспозиция (иначе — авто, как с ND-фильтром); усиление ГРИП — по смыслу масштаб сцены 1:N
+  // (на километровых дистанциях физическая глубина резкости почти бесконечна, ×2000 — размытие спереди и сзади)
+  manualExposure: false, dofBoost: 2000,
 };
 // слои выбранной зоны — их редактирует панель
 Object.defineProperty(state, 'layers', {
@@ -752,8 +754,8 @@ function updateAtmosphere() {
   atm.skyTop.copy(atm.ambTop);
   atm.skyHor.copy(atm.haze);
   atm.beta.value = 3.912 / state.visibilityKm; // Кошмидер: МДВ при контрасте 2%
-  // в кинорежиме экспозиция как у камеры: относительно f/3.2 и ISO 800
-  const camExp = state.cine && state.manualExposure ? (state.iso / 800) * (3.2 / state.fstop) ** 2 : 1;
+  // в кинорежиме при ручной экспозиции — как у камеры: относительно f/1.5 и ISO 800
+  const camExp = state.cine && state.manualExposure ? (state.iso / 800) * (1.5 / state.fstop) ** 2 : 1;
   atm.exposure.value = state.exposure * camExp;
 }
 

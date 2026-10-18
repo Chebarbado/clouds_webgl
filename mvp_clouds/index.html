@@ -6,19 +6,19 @@
   <meta name="theme-color" content="#0e141e">
   <title>Volumetric Clouds MVP</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=20261019a">
+  <link rel="stylesheet" href="style.css?v=20261019b">
   <!-- ?v= — версия модулей: GitHub Pages кэширует файлы на 10 мин, без версии телефон смешивает старые и новые
        модули. При изменении любого js в mvp_clouds/js меняйте версию здесь (во всех строках, в теге main.js и у style.css). -->
   <script type="importmap">
     { "imports": {
       "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
-      "./js/main.js": "./js/main.js?v=20261019a",
-      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261019a",
-      "./js/shaders.js": "./js/shaders.js?v=20261019a",
-      "./js/ui.js": "./js/ui.js?v=20261019a",
-      "./js/atmosphere.js": "./js/atmosphere.js?v=20261019a",
-      "./js/share.js": "./js/share.js?v=20261019a",
-      "./js/terrain.js": "./js/terrain.js?v=20261019a"
+      "./js/main.js": "./js/main.js?v=20261019b",
+      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261019b",
+      "./js/shaders.js": "./js/shaders.js?v=20261019b",
+      "./js/ui.js": "./js/ui.js?v=20261019b",
+      "./js/atmosphere.js": "./js/atmosphere.js?v=20261019b",
+      "./js/share.js": "./js/share.js?v=20261019b",
+      "./js/terrain.js": "./js/terrain.js?v=20261019b"
     } }
   </script>
 </head>
@@ -107,14 +107,14 @@
       <label class="check"><input type="checkbox" id="cineOn"> Кинорежим: объектив и глубина резкости</label>
       <div class="grid3">
         <label>Объектив<select id="lensF"><option>24</option><option>35</option><option>55</option><option>85</option></select></label>
-        <label>Диафрагма<select id="lensN"><option>1.8</option><option>2.8</option><option>3.2</option><option>4</option><option>5.6</option><option>8</option></select></label>
+        <label>Диафрагма<select id="lensN"><option>1.5</option><option>1.8</option><option>2.8</option><option>3.2</option><option>4</option><option>5.6</option><option>8</option></select></label>
         <label>ISO<select id="lensISO"><option>400</option><option>800</option><option>1600</option><option>3200</option></select></label>
       </div>
       <div id="dofBoost"></div>
       <label class="check"><input type="checkbox" id="lensManual"> Ручная экспозиция: диафрагма и ISO меняют яркость</label>
       <div class="muted">Сенсор Super 35 (BMPCC 6K), кадр 16:9. Фокус — по центру; двойной клик по сцене — фокус на точку.
-        По физике у 55 мм f/3.2 всё дальше ~30 м резко, поэтому облака размываются только при фокусе на близком;
-        усиление ×50–×300 даёт заметную глубину резкости на масштабах облаков (эффект миниатюры).</div>
+        По физике даже у 35 мм f/1.5 всё дальше ~30 м резко, поэтому на облаках размытие видно только с усилением
+        (по смыслу — масштаб сцены, как при съёмке макета): ×2000 даёт размытие и спереди, и сзади, ×1 — физически точно.</div>
       <div class="muted">ЛКМ — вращение, ПКМ — сдвиг, колесо — зум. Клик по радару переносит точку обзора.</div>
       <label class="check"><input type="checkbox" id="flyOn"> Режим полёта (клавиша F)</label>
       <div class="muted">Клик по сцене — захват мыши, мышь — обзор, W/A/S/D — движение, Space/E — вверх, C/Q — вниз,
@@ -169,6 +169,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/main.js?v=20261019a"></script>
+  <script type="module" src="js/main.js?v=20261019b"></script>
 </body>
 </html>
