@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e141e">
+  <title>Volumetric Clouds 2 — фотореализм (mvp_clouds2)</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css?v=20261019c2">
+  <!-- ?v= — версия модулей: GitHub Pages кэширует файлы на 10 мин, без версии телефон смешивает старые и новые
+       модули. При изменении любого js в mvp_clouds2/js меняйте версию здесь (во всех строках, в теге main.js и у style.css).
+       Версии mvp_clouds и mvp_clouds2 независимы: у каждого свой ?v=. -->
+  <script type="importmap">
+    { "imports": {
+      "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+      "./js/main.js": "./js/main.js?v=20261019c2",
+      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261019c2",
+      "./js/shaders.js": "./js/shaders.js?v=20261019c2",
+      "./js/ui.js": "./js/ui.js?v=20261019c2",
+      "./js/atmosphere.js": "./js/atmosphere.js?v=20261019c2",
+      "./js/share.js": "./js/share.js?v=20261019c2",
+      "./js/terrain.js": "./js/terrain.js?v=20261019c2"
+    } }
+  </script>
+</head>
+<body>
+  <button id="togglePanel" title="Скрыть/показать панель">☰</button>
+  <aside id="panel">
+    <h1>Volumetric Clouds 2 <span class="muted" style="font-size:0.6em">фотореализм</span></h1>
+    <button id="shareBtn" class="share" title="Скопировать ссылку на текущую конфигурацию облаков, солнца и камеры">🔗 Поделиться ссылкой</button>
+    <div class="shareBox" style="display:none"><input id="shareOut" readonly><div id="shareMsg" class="muted"></div></div>
+    <a class="muted" href="meteo.html" style="color:#5fb4ff">Метеомодель облакообразования →</a>
+    <a class="muted" href="../mvp_clouds/index.html" style="color:#8b98a8">← Стабильная версия mvp_clouds</a>
+
+    <section data-sec="preset">
+      <h2>Пресет</h2>
+      <select id="preset"></select>
+    </section>
+
+    <section data-sec="zones">
+      <h2>Зоны (смежные density volume)</h2>
+      <label>Сетка зон<select id="grid">
+        <option value="1x1">1 × 1 (одна зона)</option><option value="2x1">2 × 1</option><option value="1x2">1 × 2</option>
+        <option value="2x2">2 × 2</option><option value="3x1">3 × 1</option><option value="3x3">3 × 3</option>
+      </select></label>
+      <div id="zoneControls">
+        <div id="zonePick"></div>
+        <div id="zoneBlend"></div>
+        <div class="btns2">
+          <button id="copyZone" title="Скопировать слои выбранной зоны во все остальные">Слои → во все зоны</button>
+          <button id="exportZone" title="Скачать density volume выбранной зоны (uint8)">Скачать volume зоны</button>
+        </div>
+        <div class="muted">Зона выбирается кнопкой выше или Shift+клик по радару. Покрытие, высоты и толщина плавно перетекают между зонами.</div>
+      </div>
+      <label>Вертикальные ярусы<select id="slabs">
+        <option value="auto">Авто: нижний + верхний</option><option value="one">Один объём</option>
+      </select></label>
+    </section>
+
+    <section data-sec="layers">
+      <h2>Слои облачности <span id="zoneTitle"></span></h2>
+      <div id="layers"></div>
+      <button id="addLayer">+ Добавить слой</button>
+      <div id="layerWarn" class="warn"></div>
+    </section>
+
+    <section data-sec="terrain">
+      <h2>Ландшафт</h2>
+      <label>Место<select id="terrain"></select></label>
+      <label>Снимок поверхности<select id="imagery"></select></label>
+      <label class="check"><input type="checkbox" id="raiseClouds" checked> Поднимать облака над рельефом при загрузке</label>
+      <div id="terrStatus" class="muted"></div>
+      <div class="muted">Высоты слоёв — над уровнем моря. Данные: AWS Terrain Tiles, Sentinel-2 / Esri, здания — OpenStreetMap.</div>
+    </section>
+
+    <section data-sec="dynamics">
+      <h2>Динамика</h2>
+      <label class="check"><input type="checkbox" id="windOn"> Ветер — перенос облаков</label>
+      <div id="windCtl"></div>
+      <label class="check"><input type="checkbox" id="devOn"> Развитие облаков — жизненный цикл</label>
+      <div id="timeCtl"></div>
+      <div class="muted">Кучевые зарождаются, растут, распадаются; слоистые и перистые медленно меняют рисунок.
+        Направление ветра также разворачивает снос наковален, волокна Ci и гряды.</div>
+    </section>
+
+    <section data-sec="visibility">
+      <h2>Видимость</h2>
+      <div id="atmo"></div>
+    </section>
+
+    <section data-sec="sun">
+      <h2>Солнце</h2>
+      <div id="sun"></div>
+      <label class="check"><input type="checkbox" id="animSun"> Вращать солнце</label>
+    </section>
+
+    <section data-sec="camera">
+      <h2>Камера</h2>
+      <div class="btns">
+        <button data-cam="overview">Обзор</button>
+        <button data-cam="ground">С земли</button>
+        <button data-cam="top">Сверху</button>
+        <button data-cam="side">Сбоку</button>
+        <button data-cam="closeup">Крупно</button>
+        <button data-cam="inside">В облаке</button>
+        <button data-cam="above">Над облаками</button>
+        <button data-cam="below">Под облаками</button>
+      </div>
+      <label class="check"><input type="checkbox" id="cineOn"> Кинорежим: объектив и глубина резкости</label>
+      <div class="grid3">
+        <label>Объектив<select id="lensF"><option>24</option><option>35</option><option>55</option><option>85</option></select></label>
+        <label>Диафрагма<select id="lensN"><option>1.5</option><option>1.8</option><option>2.8</option><option>3.2</option><option>4</option><option>5.6</option><option>8</option></select></label>
+        <label>ISO<select id="lensISO"><option>400</option><option>800</option><option>1600</option><option>3200</option></select></label>
+      </div>
+      <div id="dofBoost"></div>
+      <label class="check"><input type="checkbox" id="lensManual"> Ручная экспозиция: диафрагма и ISO меняют яркость</label>
+      <div class="muted">Сенсор Super 35 (BMPCC 6K), кадр 16:9. Фокус — по центру; двойной клик по сцене — фокус на точку.
+        По физике даже у 35 мм f/1.5 всё дальше ~30 м резко, поэтому на облаках размытие видно только с усилением
+        (по смыслу — масштаб сцены, как при съёмке макета): ×2000 даёт размытие и спереди, и сзади, ×1 — физически точно.</div>
+      <div class="muted">ЛКМ — вращение, ПКМ — сдвиг, колесо — зум. Клик по радару переносит точку обзора.</div>
+      <label class="check"><input type="checkbox" id="flyOn"> Режим полёта (клавиша F)</label>
+      <div class="muted">Клик по сцене — захват мыши, мышь — обзор, W/A/S/D — движение, Space/E — вверх, C/Q — вниз,
+        Shift — быстрее, колесо — скорость, Esc — отпустить мышь. На телефоне — обзор пальцем и кнопки ▲▼.</div>
+    </section>
+
+    <section data-sec="volume">
+      <h2>Density volume</h2>
+      <div class="grid2">
+        <label>Размер зоны<select id="domain">
+          <option value="16">16 км</option><option value="24">24 км</option><option value="32">32 км</option>
+          <option value="48">48 км</option><option value="64">64 км</option>
+        </select></label>
+        <label>Гориз. разрешение<select id="resH">
+          <option value="256">256²</option><option value="384">384²</option><option value="512">512²</option>
+        </select></label>
+        <label>Верт. разрешение<select id="resV">
+          <option value="96">96</option><option value="128">128</option><option value="192">192</option><option value="256">256</option>
+        </select></label>
+        <label>Seed<span class="row"><input id="seed" type="number"><button id="reseed" title="Случайный seed">🎲</button></span></label>
+      </div>
+      <div id="info" class="muted"></div>
+    </section>
+
+    <section data-sec="render">
+      <h2>Рендер</h2>
+      <label>Качество<select id="quality">
+        <option value="low">Низкое</option><option value="medium">Среднее</option><option value="high">Высокое</option>
+      </select></label>
+      <div id="render"></div>
+      <label class="check"><input type="checkbox" id="showBox"> Показать границы объёма</label>
+    </section>
+  </aside>
+
+  <div id="hud"></div>
+  <button id="cineBtn" title="Кинорежим: объектив, глубина резкости, зерно">🎥</button>
+  <button id="flyBtn" title="Режим полёта (F): мышь — обзор, WASD — движение">✈</button>
+  <div id="flyPad"><button id="flyFwd">▲</button><button id="flyBack">▼</button></div>
+  <div id="cineInfo"></div>
+  <div id="focusMark"></div>
+  <div id="progress"></div>
+  <div id="attrib"></div>
+  <div id="radar">
+    <button id="radarTitle" title="Свернуть / развернуть радар">Метеорадар · dBZ</button>
+    <canvas id="radarOverlay"></canvas>
+    <div id="legend">
+      <span style="background:#04e9e7">5</span><span style="background:#019ff4">10</span><span style="background:#0300f4">15</span>
+      <span style="background:#02fd02">20</span><span style="background:#01c501">25</span><span style="background:#008e00">30</span>
+      <span style="background:#fdf802">35</span><span style="background:#e5bc00">40</span><span style="background:#fd9500">45</span>
+      <span style="background:#fd0000">50</span><span style="background:#d40000">55</span><span style="background:#bc0000">60</span>
+      <span style="background:#f800fd">65</span>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js?v=20261019b"></script>
+</body>
+</html>

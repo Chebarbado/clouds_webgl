@@ -1,0 +1,151 @@
+:root {
+  --bg: rgba(14, 20, 30, 0.86);
+  --fg: #e6edf5;
+  --muted: #8fa0b5;
+  --accent: #5fb4ff;
+  --line: rgba(255, 255, 255, 0.1);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: var(--fg); font: 13px/1.4 system-ui, 'Segoe UI', sans-serif; }
+canvas { display: block; }
+
+#panel {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 330px; overflow-y: auto;
+  background: var(--bg); backdrop-filter: blur(6px); padding: 12px 14px 24px; border-right: 1px solid var(--line);
+}
+body.panel-hidden #panel { display: none; }
+#togglePanel { position: fixed; top: 10px; left: 344px; z-index: 10; }
+body.panel-hidden #togglePanel { left: 10px; }
+
+h1 { font-size: 16px; margin: 0 0 8px; }
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 6px; }
+section { padding: 10px 0; border-bottom: 1px solid var(--line); }
+section[data-sec] > h2 { cursor: pointer; display: flex; align-items: baseline; gap: 6px; user-select: none; }
+section[data-sec] > h2 .chev { width: 10px; color: var(--muted); }
+section[data-sec] > h2 .ssum { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 11px;
+  color: var(--fg); opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58%; }
+section.folded { padding: 8px 0; }
+section.folded > h2 { margin-bottom: 0; }
+section.folded > :not(h2) { display: none !important; }
+
+select, input[type=number], button {
+  background: #1b2636; color: var(--fg); border: 1px solid #2c3b52; border-radius: 4px; padding: 4px 6px; font: inherit;
+}
+select { width: 100%; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+
+.ctl { margin: 6px 0; }
+.ctl-head { display: flex; justify-content: space-between; color: var(--muted); }
+.ctl-head b { color: var(--fg); font-weight: 600; }
+
+.layer { background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.layer.off { opacity: .5; }
+.layer-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.layer-head label { white-space: nowrap; }
+.layer-head .sum { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; visibility: hidden; }
+.layer-head .del { margin-left: auto; }
+.layer .fold { padding: 0 6px; background: none; border-color: transparent; color: var(--muted); }
+.layer .inline { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--muted); }
+.layer .inline select { width: auto; flex: 1; max-width: 62%; }
+.layer.folded { padding: 4px 8px; }
+.layer.folded .layer-head { margin-bottom: 0; }
+.layer.folded .sum { visibility: visible; }
+.layer.folded > :not(.layer-head) { display: none; }
+.layer .del { padding: 0 6px; }
+
+.btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 6px; }
+.share { width: 100%; margin: 2px 0 6px; padding: 6px; background: #1f3350; border-color: #3a5f8f; }
+.shareBox input { width: 100%; background: #111a26; color: var(--fg); border: 1px solid #2c3b52; border-radius: 4px; padding: 4px 6px; font: 11px monospace; }
+#zonePick { display: grid; gap: 4px; margin: 6px 0; }
+.zone { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 5px 6px; text-align: left; min-height: 44px; }
+.zone span { font-size: 10px; color: var(--muted); line-height: 1.2; }
+.zone.sel { border-color: #ffd34f; background: #2a2a1e; }
+.btns2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 4px 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+.grid2 label, section > label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+.row { display: flex; gap: 4px; }
+.row input { width: 100%; }
+.check { display: flex !important; flex-direction: row !important; align-items: center; gap: 6px; margin-top: 6px; color: var(--fg) !important; }
+.muted { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.warn { color: #ffb454; font-size: 12px; margin-top: 4px; }
+
+#hud { position: fixed; top: 10px; right: 16px; background: var(--bg); padding: 4px 10px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+
+#progress { position: fixed; top: 48px; left: 50%; transform: translateX(-50%); width: min(340px, calc(100% - 32px));
+  display: flex; flex-direction: column; gap: 6px; pointer-events: none; z-index: 15; }
+#progress:empty { display: none; }
+.prow { background: var(--bg); border-radius: 6px; padding: 6px 10px 8px; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.plabel { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 5px; }
+.plabel span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plabel b { font-variant-numeric: tabular-nums; }
+.pbar { height: 4px; background: rgba(255,255,255,.12); border-radius: 2px; overflow: hidden; }
+.pbar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s linear; }
+
+/* кинорежим: кнопка, монитор с параметрами объектива, маркер фокуса */
+#cineBtn { position: fixed; top: 44px; right: 16px; width: 40px; height: 40px; border-radius: 50%; font-size: 18px; z-index: 16;
+  background: var(--bg); border-color: #3a5f8f; padding: 0; }
+#cineBtn.on { background: #6b1f26; border-color: #ff5a5a; }
+#cineInfo, #focusMark { display: none; position: fixed; pointer-events: none; z-index: 14; }
+body.cine #cineInfo { display: block; font: 12px ui-monospace, monospace; color: #fff; text-shadow: 0 1px 2px #000; letter-spacing: .02em; }
+body.cine #focusMark { display: block; width: 34px; height: 24px; margin: -12px 0 0 -17px; border: 1.5px solid rgba(120,255,140,.85); border-radius: 2px; }
+#flyBtn { position: fixed; top: 92px; right: 16px; width: 40px; height: 40px; border-radius: 50%; font-size: 18px; z-index: 16;
+  background: var(--bg); border-color: #3a5f8f; padding: 0; }
+#flyBtn.on { background: #1f4a2a; border-color: #5fd16b; }
+#flyPad { display: none; position: fixed; z-index: 16; flex-direction: column; gap: 10px; }
+#flyPad button { width: 56px; height: 56px; border-radius: 50%; font-size: 22px; background: var(--bg); border-color: #3a5f8f; touch-action: none; }
+body.fly canvas { cursor: crosshair; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
+.grid3 label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+
+#attrib { position: fixed; left: 50%; transform: translateX(-50%); bottom: 4px; max-width: 70%; font-size: 10px;
+  color: rgba(255,255,255,.75); text-shadow: 0 1px 2px #000; text-align: center; pointer-events: none; }
+#attrib:empty { display: none; }
+
+/* миникарта: размер и место задаются здесь, WebGL берёт их из прямоугольника #radarOverlay */
+#radar { position: fixed; right: 16px; bottom: 34px; width: 300px; height: 300px; pointer-events: none; }
+#radarOverlay { position: absolute; inset: 0; width: 100%; height: 100%; border: 1px solid rgba(120,255,160,.5); border-radius: 4px; pointer-events: auto; cursor: crosshair; }
+#radarTitle { position: absolute; top: -24px; left: 0; color: #9fe8b4; font-size: 12px; background: none; border: none; padding: 2px 0; pointer-events: auto; }
+#legend { position: absolute; left: 0; right: 0; bottom: -18px; display: flex; }
+#legend span { flex: 1; font-size: 9px; text-align: center; color: #000; line-height: 14px; }
+body.radar-hidden #radarOverlay, body.radar-hidden #legend { display: none; }
+body.radar-hidden #radarTitle::after { content: ' ▸'; }
+
+/* ---- телефон: панель-шторка снизу, радар и HUD компактно сверху, крупные элементы управления ---- */
+@media (max-width: 760px) {
+  html, body { font-size: 14px; }
+  #panel {
+    top: auto; right: 0; width: 100%; max-height: 65vh; max-height: 65dvh;
+    border-right: none; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+    padding: 10px 16px calc(24px + env(safe-area-inset-bottom));
+    transition: transform .25s ease; transform: translateY(0); box-shadow: 0 -8px 30px rgba(0,0,0,.4);
+  }
+  body.panel-hidden #panel { display: block; transform: translateY(105%); }
+  #togglePanel, body.panel-hidden #togglePanel {
+    left: 16px; top: auto; bottom: calc(16px + env(safe-area-inset-bottom));
+    width: 52px; height: 52px; border-radius: 50%; font-size: 22px; z-index: 20;
+    background: var(--bg); border-color: #3a5f8f; box-shadow: 0 4px 14px rgba(0,0,0,.45);
+  }
+  body:not(.panel-hidden) #togglePanel { bottom: calc(65vh + 10px); bottom: calc(65dvh + 10px); }
+  select, input[type=number], button, .shareBox input { min-height: 40px; font-size: 16px; }   /* 16px — iOS не масштабирует при фокусе */
+  input[type=range] { height: 28px; }
+  .layer .del { min-height: 32px; min-width: 32px; }
+  .btns { grid-template-columns: repeat(2, 1fr); }
+  .zone { min-height: 52px; }
+  .check { min-height: 32px; }
+  #hud {
+    top: calc(8px + env(safe-area-inset-top)); left: 8px; right: auto; max-width: calc(100% - 160px);
+    font-size: 11px; padding: 3px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #radar { top: calc(30px + env(safe-area-inset-top)); right: 8px; bottom: auto; width: 128px; height: 128px; }
+  #radarTitle { top: -22px; left: auto; right: 0; font-size: 11px; }
+  #legend { bottom: -13px; }
+  #legend span { font-size: 0; line-height: 9px; }
+  #progress { top: calc(176px + env(safe-area-inset-top)); }
+  #cineBtn { top: auto; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 52px; height: 52px; font-size: 22px; }
+  #flyBtn { top: auto; right: 16px; bottom: calc(80px + env(safe-area-inset-bottom)); width: 52px; height: 52px; font-size: 22px; }
+  body.fly #flyPad { display: flex; right: 16px; bottom: calc(148px + env(safe-area-inset-bottom)); }
+  #attrib { max-width: calc(100% - 90px); left: auto; right: 8px; transform: none; bottom: calc(4px + env(safe-area-inset-bottom)); font-size: 9px; text-align: right; }
+}
