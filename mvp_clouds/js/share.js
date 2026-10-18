@@ -21,6 +21,10 @@ export function packState(state, camera, controls, typeKeys) {
     [r(state.densMul, 100), r(state.ext), r(state.erode, 100), r(state.exposure, 100), QUALITIES.indexOf(state.quality)],
     [r(p.x, 100), r(p.y, 100), r(p.z, 100), r(t.x, 100), r(t.y, 100), r(t.z, 100)],
     [state.terrain || 0, state.imagery],
+    0,                                                   // место прежнего общего распределения (старые ссылки)
+    [state.cine ? 1 : 0, state.focal, r(state.fstop, 10), state.iso, r(state.focusUV[0], 1000), r(state.focusUV[1], 1000),
+      state.manualExposure ? 1 : 0, state.dofBoost],
+    [r(p.x, 1000), r(p.y, 1000), r(p.z, 1000), r(t.x, 1000), r(t.y, 1000), r(t.z, 1000)],   // камера, шаг 1 м
   ];
 }
 
@@ -48,9 +52,14 @@ export function unpackState(a, typeKeys) {
     visibilityKm: num(a[13] / 10, 0.2, 100, 100),
     densMul: num(dens / 100, 0.1, 3, 1), ext: num(ext, 2, 80, 45), erode: num(erode / 100, 0, 1.5, 1),
     exposure: num(expo / 100, 0.3, 3, 1.1), quality: QUALITIES[q] ?? 'medium',
-    camera: Array.isArray(a[15]) && a[15].length === 6 ? a[15].map((v) => v / 100) : null,
+    camera: Array.isArray(a[19]) && a[19].length === 6 ? a[19].map((v) => v / 1000)
+      : Array.isArray(a[15]) && a[15].length === 6 ? a[15].map((v) => v / 100) : null,   // старые ссылки: шаг 10 м
     terrain: typeof a[16]?.[0] === 'string' && /^[a-z]+$/.test(a[16][0]) ? a[16][0] : '',
     imagery: a[16]?.[1] === 'esri' ? 'esri' : 's2',
+    cine: !!a[18]?.[0], focal: num(a[18]?.[1], 10, 200, 55), fstop: num(a[18]?.[2] / 10, 1, 22, 3.2),
+    iso: num(a[18]?.[3], 100, 12800, 800),
+    focusUV: [num(a[18]?.[4] / 1000, 0, 1, 0.5), num(a[18]?.[5] / 1000, 0, 1, 0.5)],
+    manualExposure: !!a[18]?.[6], dofBoost: num(a[18]?.[7], 1, 300, 1),
   };
 }
 

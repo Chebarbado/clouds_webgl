@@ -115,6 +115,31 @@ export function buildUI(ctx) {
     renderLayers();
   });
 
+  // --- режим полёта
+  $('flyBtn').addEventListener('click', () => ctx.onFlyToggle());
+  $('flyOn').addEventListener('change', () => ctx.onFlyToggle());
+
+  // --- кинорежим
+  const cineOn = $('cineOn'), lensF = $('lensF'), lensN = $('lensN'), lensISO = $('lensISO');
+  const boostSteps = [1, 2, 5, 10, 20, 50, 100, 200, 300];
+  const boost = slider('Усиление глубины резкости', 0, boostSteps.length - 1, 1, Math.max(0, boostSteps.indexOf(state.dofBoost)),
+    (i) => (i === 0 ? '×1 (физически)' : `×${boostSteps[i]}`), (i) => { state.dofBoost = boostSteps[i]; ctx.onLensChanged(); });
+  $('dofBoost').append(boost);
+  const syncLens = () => {
+    $('lensManual').checked = state.manualExposure;
+    boost.set(Math.max(0, boostSteps.indexOf(state.dofBoost)));
+    cineOn.checked = state.cine; lensF.value = String(state.focal); lensN.value = String(state.fstop); lensISO.value = String(state.iso);
+    $('cineBtn').classList.toggle('on', state.cine);
+  };
+  syncLens();
+  const lensChanged = () => { syncLens(); ctx.onLensChanged(); };
+  cineOn.addEventListener('change', () => { state.cine = cineOn.checked; lensChanged(); });
+  $('cineBtn').addEventListener('click', () => { state.cine = !state.cine; lensChanged(); });
+  lensF.addEventListener('change', () => { state.focal = +lensF.value; lensChanged(); });
+  lensN.addEventListener('change', () => { state.fstop = +lensN.value; lensChanged(); });
+  lensISO.addEventListener('change', () => { state.iso = +lensISO.value; lensChanged(); });
+  $('lensManual').addEventListener('change', (e) => { state.manualExposure = e.target.checked; lensChanged(); });
+
   // --- ландшафт
   const terrSel = $('terrain'), imgSel = $('imagery');
   terrSel.innerHTML = '<option value="">Процедурная равнина</option>' +
@@ -245,7 +270,7 @@ export function buildUI(ctx) {
     dynamics: () => [state.wind ? `ветер ${state.windSpeed} м/с` : 'без ветра', state.develop ? 'развитие' : ''].filter(Boolean).join(', '),
     visibility: () => visFmt(visToSlider(state.visibilityKm)),
     sun: () => `${Math.round(state.sunAz)}° / ${state.sunEl}°`,
-    camera: () => '',
+    camera: () => (state.cine ? `кино ${state.focal} мм f/${state.fstop}` : ''),
     volume: () => `${state.resH}² × ${state.resV}`,
     render: () => optText(q),
   };
@@ -290,8 +315,10 @@ export function buildUI(ctx) {
       rDens.set(state.densMul); rExt.set(state.ext); rEro.set(state.erode); rExp.set(state.exposure);
       syncDynamics();
       terrSel.value = state.terrain; imgSel.value = state.imagery;
+      syncLens();
     },
     setTerrainStatus(t) { $('terrStatus').textContent = t; },
+    syncFly(on) { $('flyOn').checked = on; $('flyBtn').classList.toggle('on', on); },
     // прогресс-бар поверх сцены: frac ∈ [0, 1] или null — скрыть
     setProgress(key, frac, label = '') {
       const box = $('progress');

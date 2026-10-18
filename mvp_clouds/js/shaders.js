@@ -717,6 +717,106 @@ void main() {
 }
 `;
 
+// ---------------------------------------------------------------------------
+// Кинорежим (глубина резкости). 1) Глубина облаков: облегчённый проход в половинном разрешении —
+// расстояние вдоль луча до места, где облако становится непрозрачным наполовину; хранится как 1/(1+t),
+// 0 — облака нет. 2) Объектив: тонкая линза, разброс по кругу нерезкости, зерно ISO, виньетка, кадр 16:9.
+// ---------------------------------------------------------------------------
+export const cloudDepthFrag = /* glsl */`
+precision highp float;
+precision highp sampler3D;
+uniform vec3 uBoxMin, uBoxMax;
+uniform float uExt, uDensMul;
+uniform sampler2D uDepth;
+uniform vec2 uRes;
+uniform float uNear, uFar;
+uniform vec3 uCamFwd;
+varying vec3 vWorld;
+${common}
+${volume}
+void main() {
+  vec3 ro = cameraPosition, rd = normalize(vWorld - ro);
+  vec2 th = boxHit(ro, rd, uBoxMin, uBoxMax);
+  float t0 = max(th.x, 0.), t1 = th.y;
+  float zn = texture(uDepth, gl_FragCoord.xy / uRes).r * 2. - 1.;
+  float viewZ = 2. * uNear * uFar / ((uFar - uNear) * zn - (uFar + uNear));
+  t1 = min(t1, -viewZ / max(dot(rd, uCamFwd), 1e-4));
+  float tau = 0., t = t0;
+  for (int i = 0; i < 160; i++) {
+    if (t > t1) break;
+    float dt = .08 * (1. + t * .05);
+    tau += volD(ro + rd * t) * uDensMul * uExt * dt;
+    if (tau > .7) { gl_FragColor = vec4(1. / (1. + t)); return; }   // облако непрозрачно наполовину
+    t += dt;
+  }
+  gl_FragColor = vec4(0.);
+}
+`;
+
+export const dofFrag = /* glsl */`
+precision highp float;
+uniform sampler2D uColor;        // кадр: сцена + облака
+uniform sampler2D uDepth;        // глубина непрозрачной сцены
+uniform sampler2D uCloudDepth;   // глубина облаков (1/(1+t))
+uniform vec2 uRes;               // размер буфера, пикс
+uniform float uNear, uFar;
+uniform vec2 uTanHalf;           // tg половинных углов обзора камеры (x, y)
+uniform vec4 uFrame;             // кадр 16:9 в uv: (x0, y0, x1, y1), вне — шторки
+uniform vec2 uFocusUV;           // точка фокусировки (uv экрана)
+uniform float uFocal, uN, uSensorW, uISO, uTime;
+uniform float uBoost;            // усиление глубины резкости: 1 — физически точно
+varying vec2 vUv;
+
+float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+
+// расстояние вдоль оптической оси, км: ближайшее из непрозрачной сцены и облаков
+float axialZ(vec2 uv) {
+  float zn = texture(uDepth, uv).r * 2. - 1.;
+  float zo = -2. * uNear * uFar / ((uFar - uNear) * zn - (uFar + uNear));
+  float c = texture(uCloudDepth, uv).r;
+  if (c > 0.) {
+    vec3 rv = vec3((uv * 2. - 1.) * uTanHalf, -1.);
+    zo = min(zo, (1. / c - 1.) / length(rv));          // расстояние вдоль луча → вдоль оси
+  }
+  return zo;
+}
+
+void main() {
+  if (any(lessThan(vUv, uFrame.xy)) || any(greaterThan(vUv, uFrame.zw))) { gl_FragColor = vec4(0., 0., 0., 1.); return; }
+  // круг нерезкости по тонкой линзе: c = A·f·|z − S| / (z·(S − f)), A = f/N; всё в мм, затем в пиксели кадра
+  float f = uFocal;
+  float S = max(axialZ(uFocusUV) * 1e6, f * 1.5);
+  float framePx = uRes.x * (uFrame.z - uFrame.x);
+  float kPx = framePx / uSensorW * .5 * uBoost;         // радиус круга в пикселях на 1 мм диаметра
+  float zC = axialZ(vUv) * 1e6;
+  float cocC = min((f / uN) * f * abs(zC - S) / (zC * (S - f)) * kPx, 26.);
+  // сбор по золотой спирали: соседняя точка размывает центр, если её круг его накрывает;
+  // фон не заливает резкий передний план (берётся только при широком круге самого центра)
+  const int NS = 48;
+  vec3 acc = texture(uColor, vUv).rgb; float wsum = 1.;
+  float R = 26.;
+  for (int i = 1; i < NS; i++) {
+    float r = sqrt(float(i) / float(NS)) * R;
+    float a = float(i) * 2.39996323;
+    vec2 o = vec2(cos(a), sin(a)) * r;
+    vec2 uv = vUv + o / uRes;
+    float zs = axialZ(uv) * 1e6;
+    float cocS = min((f / uN) * f * abs(zs - S) / (zs * (S - f)) * kPx, 26.);
+    float w = smoothstep(r - 1.5, r, cocS);
+    if (zs > zC) w = min(w, smoothstep(r - 1.5, r, cocC));
+    acc += texture(uColor, uv).rgb * w; wsum += w;
+  }
+  vec3 col = acc / wsum;
+  // зерно сенсора: сильнее с ISO и в тенях; виньетка объектива
+  float lum = dot(col, vec3(.299, .587, .114));
+  float amp = .011 * sqrt(uISO / 100.);
+  col += (hash(gl_FragCoord.xy + fract(uTime) * 917.) - .5) * amp * (1.4 - lum);
+  vec2 fq = (vUv - (uFrame.xy + uFrame.zw) * .5) / (uFrame.zw - uFrame.xy);
+  col *= 1. - .32 * dot(fq, fq) * 1.6;
+  gl_FragColor = vec4(col, 1.);
+}
+`;
+
 // Копия кадра непрозрачной сцены на экран (облака затем дорисовываются поверх)
 export const blitFrag = /* glsl */`
 precision highp float;

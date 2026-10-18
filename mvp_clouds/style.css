@@ -84,6 +84,22 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pbar { height: 4px; background: rgba(255,255,255,.12); border-radius: 2px; overflow: hidden; }
 .pbar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s linear; }
 
+/* кинорежим: кнопка, монитор с параметрами объектива, маркер фокуса */
+#cineBtn { position: fixed; top: 44px; right: 16px; width: 40px; height: 40px; border-radius: 50%; font-size: 18px; z-index: 16;
+  background: var(--bg); border-color: #3a5f8f; padding: 0; }
+#cineBtn.on { background: #6b1f26; border-color: #ff5a5a; }
+#cineInfo, #focusMark { display: none; position: fixed; pointer-events: none; z-index: 14; }
+body.cine #cineInfo { display: block; font: 12px ui-monospace, monospace; color: #fff; text-shadow: 0 1px 2px #000; letter-spacing: .02em; }
+body.cine #focusMark { display: block; width: 34px; height: 24px; margin: -12px 0 0 -17px; border: 1.5px solid rgba(120,255,140,.85); border-radius: 2px; }
+#flyBtn { position: fixed; top: 92px; right: 16px; width: 40px; height: 40px; border-radius: 50%; font-size: 18px; z-index: 16;
+  background: var(--bg); border-color: #3a5f8f; padding: 0; }
+#flyBtn.on { background: #1f4a2a; border-color: #5fd16b; }
+#flyPad { display: none; position: fixed; z-index: 16; flex-direction: column; gap: 10px; }
+#flyPad button { width: 56px; height: 56px; border-radius: 50%; font-size: 22px; background: var(--bg); border-color: #3a5f8f; touch-action: none; }
+body.fly canvas { cursor: crosshair; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
+.grid3 label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+
 #attrib { position: fixed; left: 50%; transform: translateX(-50%); bottom: 4px; max-width: 70%; font-size: 10px;
   color: rgba(255,255,255,.75); text-shadow: 0 1px 2px #000; text-align: center; pointer-events: none; }
 #attrib:empty { display: none; }
@@ -128,5 +144,8 @@ body.radar-hidden #radarTitle::after { content: ' ▸'; }
   #legend { bottom: -13px; }
   #legend span { font-size: 0; line-height: 9px; }
   #progress { top: calc(176px + env(safe-area-inset-top)); }
+  #cineBtn { top: auto; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); width: 52px; height: 52px; font-size: 22px; }
+  #flyBtn { top: auto; right: 16px; bottom: calc(80px + env(safe-area-inset-bottom)); width: 52px; height: 52px; font-size: 22px; }
+  body.fly #flyPad { display: flex; right: 16px; bottom: calc(148px + env(safe-area-inset-bottom)); }
   #attrib { max-width: calc(100% - 90px); left: auto; right: 8px; transform: none; bottom: calc(4px + env(safe-area-inset-bottom)); font-size: 9px; text-align: right; }
 }

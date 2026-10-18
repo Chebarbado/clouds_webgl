@@ -35,6 +35,9 @@ const state = {
   visibilityKm: 100, densMul: 1, ext: 45, exposure: 1.1, erode: 1.0,
   quality: MOBILE ? 'low' : 'medium', showBox: false,
   terrain: '', imagery: 's2', raiseClouds: true,   // ландшафт: '' — процедурная земля
+  // кинорежим: объектив на Super 35 (BMPCC 6K) — фокусное, диафрагма, ISO; фокус — точка экрана
+  cine: false, focal: 55, fstop: 3.2, iso: 800, focusUV: [0.5, 0.5],
+  manualExposure: false, dofBoost: 1,               // ручная экспозиция (иначе — авто, как с ND-фильтром); усиление ГРИП
 };
 // слои выбранной зоны — их редактирует панель
 Object.defineProperty(state, 'layers', {
@@ -158,10 +161,30 @@ const opaqueRT = new THREE.WebGLRenderTarget(1, 1);
 opaqueRT.depthTexture = new THREE.DepthTexture(1, 1);
 opaqueRT.depthTexture.type = THREE.UnsignedIntType;
 cloudMat.uniforms.uDepth.value = opaqueRT.depthTexture;
+// Кинорежим: кадр (сцена + облака) → буфер; глубина облаков — облегчённым проходом в половинном разрешении;
+// затем объектив (dofFrag) выводит на экран кадр 16:9 с глубиной резкости, зерном и виньеткой
+const SENSOR_W = 23.1;                                     // ширина сенсора BMPCC 6K (Super 35), мм
+const FRAME_ASPECT = 16 / 9;
+const sceneRT = new THREE.WebGLRenderTarget(1, 1);
+const cdRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+const cloudDepthMat = new THREE.ShaderMaterial({
+  vertexShader: S.worldVert, fragmentShader: S.cloudDepthFrag, side: THREE.BackSide, depthTest: false, depthWrite: false,
+  uniforms: { ...shared, uDepth: { value: opaqueRT.depthTexture }, uRes: { value: new THREE.Vector2(1, 1) },
+    uNear: cloudMat.uniforms.uNear, uFar: cloudMat.uniforms.uFar, uCamFwd: cloudMat.uniforms.uCamFwd },
+});
+const cloudDepthBox = new THREE.Mesh(cloudBox.geometry, cloudDepthMat);
+cloudDepthBox.frustumCulled = false;
+const cdScene = new THREE.Scene();
+cdScene.add(cloudDepthBox);
+
 function resizeTargets() {
   const v = renderer.getDrawingBufferSize(new THREE.Vector2());
   opaqueRT.setSize(v.x, v.y);
+  sceneRT.setSize(v.x, v.y);
+  cdRT.setSize(Math.ceil(v.x / 2), Math.ceil(v.y / 2));
   cloudMat.uniforms.uRes.value.copy(v);
+  cloudDepthMat.uniforms.uRes.value.set(Math.ceil(v.x / 2), Math.ceil(v.y / 2));
+  dof?.mat.uniforms.uRes.value.copy(v);
 }
 
 const boxHelper = new THREE.Box3Helper(new THREE.Box3(box.min, box.max), 0xffcc44);
@@ -198,6 +221,53 @@ function fsScene(fragmentShader, uniforms) {
 }
 
 const blit = fsScene(S.blitFrag, { uTex: { value: opaqueRT.texture } });
+const dof = fsScene(S.dofFrag, {
+  uColor: { value: sceneRT.texture }, uDepth: { value: opaqueRT.depthTexture }, uCloudDepth: { value: cdRT.texture },
+  uRes: { value: new THREE.Vector2(1, 1) }, uNear: cloudMat.uniforms.uNear, uFar: cloudMat.uniforms.uFar,
+  uTanHalf: { value: new THREE.Vector2() }, uFrame: { value: new THREE.Vector4(0, 0, 1, 1) }, uFocusUV: { value: new THREE.Vector2(0.5, 0.5) },
+  uFocal: { value: 55 }, uN: { value: 3.2 }, uSensorW: { value: SENSOR_W }, uISO: { value: 800 }, uTime: { value: 0 }, uBoost: { value: 1 },
+});
+
+// Объектив: поле зрения по фокусному и ширине сенсора, кадр 16:9 (шторки, если экран другой формы)
+const cineInfo = document.getElementById('cineInfo'), focusMark = document.getElementById('focusMark');
+function applyLens() {
+  const a = innerWidth / innerHeight;
+  const U = dof.mat.uniforms;
+  let tanY;
+  if (state.cine) {
+    const tanX = SENSOR_W / (2 * state.focal);
+    const tanYf = tanX / FRAME_ASPECT;
+    if (a >= FRAME_ASPECT) {                           // экран шире кадра — шторки по бокам
+      tanY = tanYf;
+      const w = FRAME_ASPECT / a;
+      U.uFrame.value.set(0.5 - w / 2, 0, 0.5 + w / 2, 1);
+    } else {                                           // экран уже кадра (телефон) — шторки сверху и снизу
+      tanY = tanX / a;
+      const h = a / FRAME_ASPECT;
+      U.uFrame.value.set(0, 0.5 - h / 2, 1, 0.5 + h / 2);
+    }
+  } else tanY = Math.tan(THREE.MathUtils.degToRad(30));
+  camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(tanY));
+  camera.updateProjectionMatrix();
+  U.uTanHalf.value.set(tanY * a, tanY);
+  U.uFocal.value = state.focal; U.uN.value = state.fstop; U.uISO.value = state.iso; U.uBoost.value = state.dofBoost;
+  U.uFocusUV.value.set(state.focusUV[0], state.focusUV[1]);
+  document.body.classList.toggle('cine', state.cine);
+  const fr = U.uFrame.value;
+  cineInfo.style.left = `${fr.x * innerWidth + 12}px`;
+  cineInfo.style.top = `${(1 - fr.w) * innerHeight + 10}px`;
+  cineInfo.textContent = `● ${state.focal} мм · f/${state.fstop} · ISO ${state.iso} · 1/50 · 16:9` +
+    (state.manualExposure ? '' : ' · AE') + (state.dofBoost > 1 ? ` · ГРИП ×${state.dofBoost}` : '');
+  focusMark.style.left = `${state.focusUV[0] * innerWidth}px`;
+  focusMark.style.top = `${(1 - state.focusUV[1]) * innerHeight}px`;
+  updateAtmosphere();                                  // экспозиция зависит от диафрагмы и ISO
+}
+// двойной клик / тап в кинорежиме — фокус на эту точку
+renderer.domElement.addEventListener('dblclick', (e) => {
+  if (!state.cine) return;
+  state.focusUV = [e.clientX / innerWidth, 1 - e.clientY / innerHeight];
+  applyLens();
+});
 
 // Текстура детализации — один раз
 {
@@ -682,7 +752,9 @@ function updateAtmosphere() {
   atm.skyTop.copy(atm.ambTop);
   atm.skyHor.copy(atm.haze);
   atm.beta.value = 3.912 / state.visibilityKm; // Кошмидер: МДВ при контрасте 2%
-  atm.exposure.value = state.exposure;
+  // в кинорежиме экспозиция как у камеры: относительно f/3.2 и ISO 800
+  const camExp = state.cine && state.manualExposure ? (state.iso / 800) * (3.2 / state.fstop) ** 2 : 1;
+  atm.exposure.value = state.exposure * camExp;
 }
 
 function applyQuality() {
@@ -716,7 +788,7 @@ function clearTerrain() {
   attribEl.textContent = '';
 }
 
-async function applyTerrain() {
+async function applyTerrain({ keepCamera = false } = {}) {
   const token = ++terr.token;
   const key = state.terrain;
   if (!key) { clearTerrain(); ui.setTerrainStatus(''); ui.setProgress('terrain', null); return; }
@@ -763,10 +835,12 @@ async function applyTerrain() {
       }
     }
     ui.setTerrainStatus(msg);
-    const [vp, vt] = d.loc.view;
-    camera.position.set(...vp);
-    controls.target.set(...vt);
-    controls.update();
+    if (!keepCamera) {                            // при открытии ссылки камера уже задана ею
+      const [vp, vt] = d.loc.view;
+      camera.position.set(...vp);
+      controls.target.set(...vt);
+      controls.update();
+    }
   } catch (e) {
     if (token === terr.token) { ui.setTerrainStatus(`Не удалось загрузить: ${e.message}`); ui.setProgress('terrain', null); }
   }
@@ -848,6 +922,8 @@ const ui = buildUI({
   onAtmosphereChanged: () => updateAtmosphere(),
   onRenderChanged: () => applyRender(),
   onShare: () => shareLink(),
+  onLensChanged: () => applyLens(),
+  onFlyToggle: () => setFly(!fly.on),
   onTerrainChanged: () => applyTerrain(),
   LOCATIONS, IMAGERY,
   onPreset: applyPreset,
@@ -869,6 +945,7 @@ const TYPE_KEYS = Object.keys(CLOUD_TYPES);
 let lastCode = null;
 
 async function shareLink() {
+  if (fly.on) controls.target.copy(camera.position).add(camera.getWorldDirection(new THREE.Vector3()));
   const code = await encode(packState(state, camera, controls, TYPE_KEYS));
   lastCode = code;
   history.replaceState(null, '', `${location.pathname}#c=${code}`);
@@ -880,7 +957,7 @@ async function shareLink() {
 
 function applyConfig(c) {
   const keys = ['tileKm', 'grid', 'blendKm', 'seed', 'resH', 'resV', 'slabMode', 'wind', 'windSpeed', 'windFrom', 'develop',
-    'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality'];
+    'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality', 'cine', 'focal', 'fstop', 'iso', 'focusUV', 'manualExposure', 'dofBoost'];
   for (const k of keys) state[k] = c[k];
   if (MOBILE) {                                   // ссылку с десктопа ужимаем до возможностей телефона
     state.quality = 'low';
@@ -892,11 +969,12 @@ function applyConfig(c) {
   state.sel = c.sel;
   const terrainChanged = state.terrain !== c.terrain || state.imagery !== c.imagery;
   state.terrain = c.terrain; state.imagery = c.imagery;
-  if (terrainChanged) { state.raiseClouds = false; applyTerrain().then(() => { state.raiseClouds = true; }); }
+  if (terrainChanged) { state.raiseClouds = false; applyTerrain({ keepCamera: true }).then(() => { state.raiseClouds = true; }); }
   ui.syncAll();
   ui.refresh();
   updateAtmosphere();
   applyRender();
+  applyLens();
   startGeneration();
   if (c.camera) {
     camera.position.set(c.camera[0], c.camera[1], c.camera[2]);
@@ -913,13 +991,87 @@ async function applyHash() {
 }
 addEventListener('hashchange', applyHash);   // вставили другую ссылку в ту же вкладку
 
-window.clouds = { camera, controls, state }; // для отладки из консоли
+// ---------------------------------------------------------------------------
+// Режим полёта: мышь — обзор (захват указателя), WASD — движение, Space/E и C/Q — вверх/вниз,
+// Shift — ×5, колесо — скорость; на телефоне — обзор перетаскиванием и кнопки вперёд/назад
+// ---------------------------------------------------------------------------
+const fly = { on: false, yaw: 0, pitch: 0, keys: {}, speed: 0.1, locked: false, drag: null };
+function setFly(on) {
+  fly.on = on;
+  controls.enabled = !on;
+  if (on) {
+    const d = camera.getWorldDirection(new THREE.Vector3());
+    fly.yaw = Math.atan2(-d.x, -d.z);
+    fly.pitch = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1));
+  } else {
+    if (document.pointerLockElement) document.exitPointerLock();
+    const d = camera.getWorldDirection(new THREE.Vector3());   // дальше — вращение вокруг точки впереди
+    controls.target.copy(camera.position).addScaledVector(d, 2);
+    controls.update();
+    fly.keys = {};
+  }
+  document.body.classList.toggle('fly', on);
+  ui.syncFly(on);
+}
+function updateFly(dt) {
+  camera.quaternion.setFromEuler(new THREE.Euler(fly.pitch, fly.yaw, 0, 'YXZ'));
+  const k = fly.keys, cp = Math.cos(fly.pitch);
+  const fwd = new THREE.Vector3(-Math.sin(fly.yaw) * cp, Math.sin(fly.pitch), -Math.cos(fly.yaw) * cp);
+  const right = new THREE.Vector3(Math.cos(fly.yaw), 0, -Math.sin(fly.yaw));
+  const mv = new THREE.Vector3()
+    .addScaledVector(fwd, (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0))
+    .addScaledVector(right, (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0));
+  mv.y += (k.Space || k.KeyE ? 1 : 0) - (k.KeyC || k.KeyQ ? 1 : 0);
+  if (mv.lengthSq() > 0) camera.position.addScaledVector(mv.normalize(), fly.speed * (k.ShiftLeft || k.ShiftRight ? 5 : 1) * dt);
+}
+const canvasEl = renderer.domElement;
+const typing = (e) => /INPUT|SELECT|TEXTAREA/.test(e.target.tagName);
+canvasEl.addEventListener('click', () => { if (fly.on && !MOBILE && !fly.locked) canvasEl.requestPointerLock?.(); });
+document.addEventListener('pointerlockchange', () => { fly.locked = document.pointerLockElement === canvasEl; });
+document.addEventListener('mousemove', (e) => {
+  if (!fly.locked) return;
+  fly.yaw -= e.movementX * 0.0022;
+  fly.pitch = THREE.MathUtils.clamp(fly.pitch - e.movementY * 0.0022, -1.55, 1.55);
+});
+canvasEl.addEventListener('pointerdown', (e) => { if (fly.on && e.pointerType !== 'mouse') fly.drag = [e.clientX, e.clientY]; });
+canvasEl.addEventListener('pointermove', (e) => {
+  if (!fly.on || !fly.drag || e.pointerType === 'mouse') return;
+  fly.yaw += (e.clientX - fly.drag[0]) * 0.005;
+  fly.pitch = THREE.MathUtils.clamp(fly.pitch + (e.clientY - fly.drag[1]) * 0.005, -1.55, 1.55);
+  fly.drag = [e.clientX, e.clientY];
+});
+addEventListener('pointerup', () => { fly.drag = null; });
+addEventListener('keydown', (e) => {
+  if (typing(e)) return;
+  if (e.code === 'KeyF' && !e.ctrlKey && !e.metaKey) { setFly(!fly.on); return; }
+  if (!fly.on) return;
+  fly.keys[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();
+});
+addEventListener('keyup', (e) => { fly.keys[e.code] = false; });
+addEventListener('blur', () => { fly.keys = {}; });
+canvasEl.addEventListener('wheel', (e) => {
+  if (!fly.on) return;
+  e.preventDefault();
+  fly.speed = THREE.MathUtils.clamp(fly.speed * (e.deltaY < 0 ? 1.25 : 0.8), 0.005, 5);
+}, { passive: false });
+// кнопки вперёд/назад на телефоне
+for (const [id, code] of [['flyFwd', 'KeyW'], ['flyBack', 'KeyS']]) {
+  const b = document.getElementById(id);
+  const set = (v) => (ev) => { ev.preventDefault(); fly.keys[code] = v; };
+  b.addEventListener('pointerdown', set(true));
+  b.addEventListener('pointerup', set(false));
+  b.addEventListener('pointerleave', set(false));
+}
+
+window.clouds = { camera, controls, state, renderer, cdRT, opaqueRT }; // для отладки из консоли
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   resizeTargets();
+  applyLens();
 });
 
 // ---------------------------------------------------------------------------
@@ -927,6 +1079,7 @@ addEventListener('resize', () => {
 // ---------------------------------------------------------------------------
 updateAtmosphere();
 applyQuality();
+applyLens();
 // Сцена из метеомодели (meteo.html): index.html?scene={"layers":[...],"vis":км}
 function applyScene(scene) {
   const known = (scene.layers || []).filter((l) => CLOUD_TYPES[l.type]).slice(0, MAX_LAYERS);
@@ -964,7 +1117,7 @@ renderer.setAnimationLoop((time) => {
 
   stepGeneration();
   updateAnim(dt);
-  controls.update();
+  if (fly.on) updateFly(dt); else controls.update();
   const minY = surfaceY(camera.position.x, camera.position.z) + 0.002;
   if (camera.position.y < minY) camera.position.y = minY;
   sky.position.copy(camera.position);
@@ -974,12 +1127,21 @@ renderer.setAnimationLoop((time) => {
   // непрозрачная сцена → буфер с глубиной → на экран; поверх — облака, обрезанные по этой глубине
   renderer.setRenderTarget(opaqueRT);
   renderer.render(scene, camera);
-  renderer.setRenderTarget(null);
-  renderer.render(blit.scene, fsCam);
   camera.getWorldDirection(cloudMat.uniforms.uCamFwd.value);
+  renderer.setRenderTarget(state.cine ? sceneRT : null);
+  renderer.render(blit.scene, fsCam);
   renderer.autoClear = false;
   renderer.render(cloudScene, camera);
   renderer.autoClear = true;
+  if (state.cine) {
+    cloudDepthBox.position.copy(cloudBox.position);
+    cloudDepthBox.scale.copy(cloudBox.scale);
+    renderer.setRenderTarget(cdRT);
+    renderer.render(cdScene, camera);
+    renderer.setRenderTarget(null);
+    dof.mat.uniforms.uTime.value = time * 0.001;
+    renderer.render(dof.scene, fsCam);
+  }
 
   // миникарта радара: место и размер — из CSS; свёрнутую не рисуем
   const rr = radarCanvas.getBoundingClientRect();
@@ -1003,5 +1165,6 @@ renderer.setAnimationLoop((time) => {
   // прогресс генерации облаков — пока не готов отображаемый кадр (фоновые кадры динамики не показываем)
   ui.setProgress('gen', sets[0].ready ? null : job.done / job.total, 'Генерация облаков');
   const genTxt = !sets[0].ready ? ` · генерация ${Math.round((job.done / job.total) * 100)}%` : animOn() ? '' : ` · объём за ${job.lastMs.toFixed(0)} мс`;
-  ui.setHud(`${fps.toFixed(0)} FPS · камера ${alt} м${sim}${genTxt}`);
+  const flyTxt = fly.on ? ` · полёт ${Math.round(fly.speed * 1000)} м/с${fly.locked || MOBILE ? '' : ' (клик — захват мыши)'}` : '';
+  ui.setHud(`${fps.toFixed(0)} FPS · камера ${alt} м${flyTxt}${sim}${genTxt}`);
 });
