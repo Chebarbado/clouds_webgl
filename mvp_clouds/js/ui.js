@@ -96,6 +96,23 @@ export function buildUI(ctx) {
     renderLayers();
   });
 
+  // --- динамика: ветер и развитие облаков
+  const compass = (d) => ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'][Math.round(d / 45) % 8];
+  const windOn = $('windOn'), devOn = $('devOn');
+  const wSpeed = slider('Скорость ветра', 0, 40, 1, state.windSpeed, (v) => `${v} м/с`, (v) => { state.windSpeed = v; });
+  const wFrom = slider('Ветер дует с', 0, 359, 1, state.windFrom, (v) => `${compass(v)} (${v}°)`,
+    (v) => { state.windFrom = v; }, () => ctx.onDynamicsChanged(false));
+  const tScale = slider('Ускорение времени', 1, 120, 1, state.timeScale, (v) => `×${v}`, (v) => { state.timeScale = v; });
+  $('windCtl').append(wSpeed, wFrom);
+  $('timeCtl').append(tScale);
+  windOn.checked = state.wind; devOn.checked = state.develop;
+  windOn.addEventListener('change', () => { state.wind = windOn.checked; ctx.onDynamicsChanged(true); });
+  devOn.addEventListener('change', () => { state.develop = devOn.checked; ctx.onDynamicsChanged(true); });
+  const syncDynamics = () => {
+    windOn.checked = state.wind; devOn.checked = state.develop;
+    wSpeed.set(state.windSpeed); wFrom.set(state.windFrom); tScale.set(state.timeScale);
+  };
+
   // --- атмосфера
   const visToSlider = (v) => Math.log10(v);
   const atmEl = $('atmo');
@@ -122,8 +139,8 @@ export function buildUI(ctx) {
     return s;
   };
   const domSel = bindSel('domain', 'tileKm', ctx.onVolumeChanged);
-  bindSel('resH', 'resH', ctx.onVolumeChanged);
-  bindSel('resV', 'resV', ctx.onVolumeChanged);
+  const resHSel = bindSel('resH', 'resH', ctx.onVolumeChanged);
+  const resVSel = bindSel('resV', 'resV', ctx.onVolumeChanged);
   const seedIn = $('seed');
   seedIn.value = state.seed;
   seedIn.addEventListener('change', () => { state.seed = +seedIn.value || 0; ctx.onVolumeChanged(); });
@@ -167,15 +184,19 @@ export function buildUI(ctx) {
   const q = $('quality');
   q.value = state.quality;
   q.addEventListener('change', () => { state.quality = q.value; ctx.onRenderChanged(); });
-  renEl.append(
-    slider('Плотность', 0.1, 3, 0.05, state.densMul, (v) => v.toFixed(2), (v) => { state.densMul = v; ctx.onRenderChanged(); }),
-    slider('Экстинкция, 1/км', 2, 80, 1, state.ext, (v) => v.toFixed(0), (v) => { state.ext = v; ctx.onRenderChanged(); }),
-    slider('Детализация краёв', 0, 1.5, 0.05, state.erode, (v) => v.toFixed(2), (v) => { state.erode = v; ctx.onRenderChanged(); }),
-    slider('Экспозиция', 0.3, 3, 0.05, state.exposure, (v) => v.toFixed(2), (v) => { state.exposure = v; ctx.onAtmosphereChanged(); }),
-  );
+  const rDens = slider('Плотность', 0.1, 3, 0.05, state.densMul, (v) => v.toFixed(2), (v) => { state.densMul = v; ctx.onRenderChanged(); });
+  const rExt = slider('Экстинкция, 1/км', 2, 80, 1, state.ext, (v) => v.toFixed(0), (v) => { state.ext = v; ctx.onRenderChanged(); });
+  const rEro = slider('Детализация краёв', 0, 1.5, 0.05, state.erode, (v) => v.toFixed(2), (v) => { state.erode = v; ctx.onRenderChanged(); });
+  const rExp = slider('Экспозиция', 0.3, 3, 0.05, state.exposure, (v) => v.toFixed(2), (v) => { state.exposure = v; ctx.onAtmosphereChanged(); });
+  renEl.append(rDens, rExt, rEro, rExp);
   $('showBox').addEventListener('change', (e) => { state.showBox = e.target.checked; ctx.onRenderChanged(); });
 
   $('togglePanel').addEventListener('click', () => document.body.classList.toggle('panel-hidden'));
+
+  // --- ссылка на конфигурацию
+  const shareOut = $('shareOut');
+  $('shareBtn').addEventListener('click', ctx.onShare);
+  shareOut.addEventListener('focus', () => shareOut.select());
 
   return {
     refresh() {
@@ -184,6 +205,20 @@ export function buildUI(ctx) {
     },
     syncSun() { az.set(state.sunAz); },
     syncVisibility() { vis.set(visToSlider(state.visibilityKm)); },
+    // все элементы панели — по состоянию (после открытия ссылки)
+    syncAll() {
+      resHSel.value = String(state.resH); resVSel.value = String(state.resV); seedIn.value = state.seed;
+      slabSel.value = state.slabMode; q.value = state.quality;
+      az.set(state.sunAz); el.set(state.sunEl); $('animSun').checked = state.animateSun;
+      vis.set(visToSlider(state.visibilityKm));
+      rDens.set(state.densMul); rExt.set(state.ext); rEro.set(state.erode); rExp.set(state.exposure);
+      syncDynamics();
+    },
+    showShare(url, copied) {
+      shareOut.value = url;
+      shareOut.parentElement.style.display = '';
+      $('shareMsg').textContent = copied ? `Ссылка скопирована (${url.length} символов)` : 'Скопируйте ссылку из поля';
+    },
     updateInfo(html) { $('info').innerHTML = html; },
     setHud(text) { $('hud').textContent = text; },
   };

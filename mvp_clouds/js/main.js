@@ -4,6 +4,7 @@ import { CLOUD_TYPES, KIND_ID, PRESETS, TYPE_ABBR } from './cloudTypes.js';
 import * as S from './shaders.js';
 import { buildUI } from './ui.js';
 import { sunTransmittance, skyAverage, skyRadiance, mieFromVisibility } from './atmosphere.js';
+import { packState, unpackState, encode, decode, hashCode } from './share.js';
 
 // ---------------------------------------------------------------------------
 // Состояние
@@ -23,6 +24,7 @@ const MAX_VOXELS = 160e6;   // предел суммарного объёма (R
 const state = {
   tileKm: 32, resH: 384, resV: 192, seed: 1,
   grid: { nx: 1, ny: 1 }, zones: [{ layers: [] }], sel: 0, blendKm: 8, slabMode: 'auto',
+  wind: false, windSpeed: 12, windFrom: 290, develop: false, timeScale: 30,
   sunAz: 280, sunEl: 35, animateSun: false,
   visibilityKm: 100, densMul: 1, ext: 45, exposure: 1.1, erode: 1.0,
   quality: 'medium', showBox: false,
@@ -100,6 +102,9 @@ const shared = {
   // ярусы density volume: нижний и верхний (если ярус один — оба указывают на него)
   uVol: { value: null }, uVolHi: { value: null }, uSplitY: { value: 1e9 },
   uLoY: { value: new THREE.Vector2(0, 1) }, uHiY: { value: new THREE.Vector2(0, 1) },
+  // динамика: второй ключевой кадр, вес смешивания и снос ветром каждого кадра (км)
+  uVolB: { value: null }, uVolHiB: { value: null }, uMixB: { value: 0 },
+  uShiftA: { value: new THREE.Vector2() }, uShiftB: { value: new THREE.Vector2() },
   uExt: { value: state.ext }, uDensMul: { value: state.densMul },
 };
 
@@ -127,6 +132,7 @@ const cloudMat = new THREE.ShaderMaterial({
   uniforms: {
     ...shared,
     uDetail: { value: null }, uDetailScale: { value: 0.6 }, uErode: { value: state.erode },
+    uDetailShift: { value: new THREE.Vector2() }, uBoil: { value: 0 },
     uStepNear: { value: 0.05 }, uStepGrow: { value: 0.04 }, uLightStep: { value: 0.05 }, uMaxSteps: { value: 400 },
   },
 });
@@ -187,6 +193,7 @@ const gen = fsScene(S.genFrag, {
   uZ: { value: 0 }, uOrigin: { value: new THREE.Vector2() }, uSize: { value: new THREE.Vector2() },
   uWorld: { value: new THREE.Vector2() }, uGrid: { value: new THREE.Vector2(1, 1) },
   uTile: { value: 32000 }, uBlend: { value: 8000 }, uNG: { value: 0 },
+  uOff: { value: new THREE.Vector2() }, uTime: { value: 0 }, uDev: { value: 0 },
   uWind: { value: new THREE.Vector2(1, 0.35).normalize() },
   uGA: { value: vec4s(MAX_GROUPS * MAX_ZONES) },
   uGB: { value: vec4s(MAX_GROUPS) }, uGC: { value: vec4s(MAX_GROUPS) }, uGD: { value: vec4s(MAX_GROUPS) },
@@ -235,10 +242,22 @@ function buildGroups() {
   return { groups, dropped: all.length - groups.length };
 }
 
-let slabs = [];               // ярусы: { z0, z1, split, nz, rt }
+// План объёма (ярусы, размеры атласа) и ключевые кадры. Без динамики кадр один. С ветром/развитием —
+// три кадра по кругу: рендер смешивает кадры [0] и [1] со сдвигом по ветру, кадр [2] генерируется в фоне.
+let plan = null;              // { slabs: [{ z0, z1, split, nz }], AW, AH }
+let sets = [];                // кадры: { rts: [rt на ярус], t (с), off (м), ready }
 let tileRes = 384;
 let groupsInfo = { groups: [], dropped: 0 };
-const job = { s: 0, k: 0, t: 0, active: false, t0: 0, lastMs: 0, total: 1, done: 0 };
+const job = { set: null, s: 0, k: 0, t: 0, active: false, t0: 0, lastMs: 0, total: 1, done: 0 };
+const anim = { t: 0, off: new THREE.Vector2() };   // модельное время (с) и накопленный снос ветром (м)
+const KEY_REAL = 2.5;                              // реальных секунд между ключевыми кадрами
+const animOn = () => state.wind || state.develop;
+// направление, куда дует ветер (в координатах генерации: x — восток, y — юг); метеонаправление — откуда
+function windDir() {
+  const b = THREE.MathUtils.degToRad((state.windFrom + 180) % 360);
+  return new THREE.Vector2(Math.sin(b), -Math.cos(b));
+}
+const windVec = () => windDir().multiplyScalar(state.wind ? state.windSpeed : 0);   // м/с
 
 // Вертикальное деление на ярусы: по самому большому промежутку между слоями, иначе посередине
 function planSlabs(z0, z1, groups) {
@@ -263,37 +282,48 @@ function startGeneration() {
   state.blendKm = Math.min(state.blendKm, state.tileKm * 0.9);
   groupsInfo = buildGroups();
   const { groups } = groupsInfo;
+  const nSets = animOn() ? 3 : 1;
 
   // разрешение зоны: сторона атласа не больше MAX_ATLAS
   tileRes = Math.min(state.resH, Math.floor(MAX_ATLAS / Math.max(nx, ny) / 16) * 16);
   const AW = nx * tileRes, AH = ny * tileRes;
 
-  // высоты мира и ярусы
+  // высоты мира и ярусы; объём на кадр — с учётом числа кадров
   if (groups.length) {
     box.z0 = Math.max(0, Math.min(...groups.map((g) => g.zmin)) - 100);
     box.z1 = Math.max(...groups.map((g) => g.zmax)) + 100;
   } else { box.z0 = 0; box.z1 = 2000; }
   const ranges = planSlabs(box.z0, box.z1, groups);
-  const nzMax = Math.floor(MAX_VOXELS / (AW * AH * ranges.length) / 16) * 16;
+  const nzMax = Math.floor(MAX_VOXELS / nSets / (AW * AH * ranges.length) / 16) * 16;
   const nz = Math.max(48, Math.min(state.resV, nzMax));
-
   // ярусы перекрываются на один срез — на границе оба считают одну и ту же функцию, шва нет
-  const newSlabs = ranges.map(([a, b], i) => {
-    const pad = (b - a) / nz;
-    return { z0: i > 0 ? a - pad : a, z1: i < ranges.length - 1 ? b + pad : b, split: b, nz };
-  });
-  newSlabs.forEach((sl, i) => {
-    const old = slabs[i];
-    if (old && old.rt.width === AW && old.rt.height === AH && old.rt.depth === nz) sl.rt = old.rt;
-    else { old?.rt.dispose(); sl.rt = make3DTarget(AW, AH, nz, THREE.ClampToEdgeWrapping); }
-  });
-  for (let i = newSlabs.length; i < slabs.length; i++) slabs[i].rt.dispose();
-  slabs = newSlabs;
+  plan = {
+    AW, AH,
+    slabs: ranges.map(([a, b], i) => {
+      const pad = (b - a) / nz;
+      return { z0: i > 0 ? a - pad : a, z1: i < ranges.length - 1 ? b + pad : b, split: b, nz };
+    }),
+  };
 
-  const lo = slabs[0], hi = slabs[slabs.length - 1];
-  shared.uVol.value = lo.rt.texture;
-  shared.uVolHi.value = hi.rt.texture;
-  shared.uSplitY.value = slabs.length > 1 ? lo.split / 1000 : 1e9;
+  // текстуры кадров: переиспользуем, если размеры совпали
+  const fits = (rt) => rt && rt.width === AW && rt.height === AH && rt.depth === nz;
+  const newSets = [];
+  for (let i = 0; i < nSets; i++) {
+    const old = sets[i];
+    const rts = plan.slabs.map((sl, j) => {
+      const rt = old?.rts[j];
+      if (fits(rt)) return rt;
+      rt?.dispose();
+      return make3DTarget(AW, AH, nz, THREE.ClampToEdgeWrapping);
+    });
+    old?.rts.slice(plan.slabs.length).forEach((rt) => rt.dispose());
+    newSets.push({ rts, t: anim.t, off: anim.off.clone(), ready: false });
+  }
+  sets.slice(nSets).forEach((s) => s.rts.forEach((rt) => rt.dispose()));
+  sets = newSets;
+
+  const lo = plan.slabs[0], hi = plan.slabs[plan.slabs.length - 1];
+  shared.uSplitY.value = plan.slabs.length > 1 ? lo.split / 1000 : 1e9;
   shared.uLoY.value.set(lo.z0 / 1000, lo.z1 / 1000);
   shared.uHiY.value.set(hi.z0 / 1000, hi.z1 / 1000);
 
@@ -320,7 +350,7 @@ function startGeneration() {
     U.uGD.value[gi].set(amp, bScale, t.rag, t.rows);
     U.uGE.value[gi].set(t.skew, t.smoothTop, t.flat, seed);
     U.uGF.value[gi].set(t.aspect, t.billowTop, t.billowBottom, cumulo ? t.deck : t.wave);
-    U.uGZ.value[gi].set(g.zmin, g.zmax, 0, 0);
+    U.uGZ.value[gi].set(g.zmin, g.zmax, t.life, 0);
     g.zone.forEach((z, zi) => U.uGA.value[gi * MAX_ZONES + zi].set(z.base, z.minT, z.range, z.cov));
   });
 
@@ -332,24 +362,53 @@ function startGeneration() {
   cloudBox.position.set(0, (box.z0 + box.z1) / 2000, 0);
   boxHelper.box.set(box.min, box.max);
 
-  Object.assign(job, { s: 0, k: 0, t: 0, active: true, t0: performance.now(), done: 0, total: slabs.length * nz * nx * ny });
+  startJob(sets[0]);
+  bindFrames(0);
   ui.updateInfo(volumeInfo());
+}
+
+function startJob(set) {
+  set.ready = false;
+  Object.assign(job, { set, s: 0, k: 0, t: 0, active: true, t0: performance.now(), done: 0,
+    total: plan.slabs.length * plan.slabs[0].nz * state.zones.length });
+}
+
+// Следующий нужный кадр: [1] через шаг после [0], затем [2] через шаг после [1]; снос — прогноз по текущему ветру
+function scheduleNext() {
+  if (!animOn() || sets.length < 3) return;
+  const step = KEY_REAL * state.timeScale;
+  const next = !sets[1].ready ? 1 : !sets[2].ready ? 2 : -1;
+  if (next < 0) return;
+  const s = sets[next];
+  s.t = sets[next - 1].t + step;
+  s.off = anim.off.clone().addScaledVector(windVec(), s.t - anim.t);
+  startJob(s);
 }
 
 // Один проход = один срез одной зоны (её собственный density volume); зоны пишутся в свои области атласа
 function genPass() {
   const { nx } = state.grid;
-  const sl = slabs[job.s];
+  const set = job.set, sl = plan.slabs[job.s];
   const tx = job.t % nx, ty = Math.floor(job.t / nx);
   const U = gen.mat.uniforms;
   U.uZ.value = sl.z0 + ((job.k + 0.5) / sl.nz) * (sl.z1 - sl.z0);
   U.uOrigin.value.set(tx * state.tileKm * 1000, ty * state.tileKm * 1000);
-  sl.rt.viewport.set(tx * tileRes, ty * tileRes, tileRes, tileRes);
-  renderer.setRenderTarget(sl.rt, job.k);
+  U.uOff.value.copy(set.off);
+  U.uTime.value = set.t;
+  U.uDev.value = state.develop ? 1 : 0;
+  U.uWind.value.copy(windDir());
+  const rt = set.rts[job.s];
+  rt.viewport.set(tx * tileRes, ty * tileRes, tileRes, tileRes);
+  renderer.setRenderTarget(rt, job.k);
   renderer.render(gen.scene, fsCam);
   job.done++;
   if (++job.t >= state.zones.length) { job.t = 0; if (++job.k >= sl.nz) { job.k = 0; job.s++; } }
-  if (job.s >= slabs.length) { job.active = false; job.lastMs = performance.now() - job.t0; }
+  if (job.s >= plan.slabs.length) {
+    job.active = false;
+    job.lastMs = performance.now() - job.t0;
+    set.ready = true;
+    scheduleNext();
+  }
 }
 
 function stepGeneration(all = false) {
@@ -362,25 +421,58 @@ function stepGeneration(all = false) {
   renderer.setRenderTarget(null);
 }
 
+// Привязка кадров к шейдерам: A = кадр [0], B = кадр [1] с весом mixB; сдвиг — снос с момента кадра
+function bindFrames(mixB) {
+  const A = sets[0], B = mixB > 0 ? sets[1] : sets[0];
+  shared.uVol.value = A.rts[0].texture;
+  shared.uVolHi.value = A.rts[A.rts.length - 1].texture;
+  shared.uVolB.value = B.rts[0].texture;
+  shared.uVolHiB.value = B.rts[B.rts.length - 1].texture;
+  shared.uMixB.value = mixB;
+  shared.uShiftA.value.copy(anim.off).sub(A.off).multiplyScalar(0.001);
+  shared.uShiftB.value.copy(anim.off).sub(B.off).multiplyScalar(0.001);
+  cloudMat.uniforms.uDetailShift.value.copy(anim.off).multiplyScalar(0.001);
+  cloudMat.uniforms.uBoil.value = state.develop ? anim.t * 0.0015 : 0;
+}
+
+// Модельное время идёт, пока готовы кадры [0] и [1]; дойдя до [1], кадры сдвигаются по кругу
+function updateAnim(dt) {
+  if (!animOn() || sets.length < 3 || !sets[0].ready || !sets[1].ready) { bindFrames(0); return; }
+  let nt = anim.t + dt * state.timeScale;
+  if (nt >= sets[1].t) {
+    if (sets[2].ready) {
+      sets.push(sets.shift());          // [1] → [0], [2] → [1], старый [0] — под новый кадр
+      sets[2].ready = false;
+      scheduleNext();
+    }
+    nt = Math.min(nt, sets[1].t);       // следующий кадр ещё не готов — ждём, без рывка
+  }
+  anim.off.addScaledVector(windVec(), nt - anim.t);
+  anim.t = nt;
+  bindFrames(Math.min(1, Math.max(0, (anim.t - sets[0].t) / (sets[1].t - sets[0].t))));
+}
+
 function volumeInfo() {
   const { nx, ny } = state.grid;
   const dxm = (state.tileKm * 1000) / tileRes;
-  const mb = slabs.reduce((s, sl) => s + 2 * sl.rt.width * sl.rt.height * sl.nz, 0) / 1048576;
-  const zinfo = slabs.map((sl, i) => `${slabs.length > 1 ? (i ? 'Верхний ярус' : 'Нижний ярус') : 'Высоты'}: ` +
+  const nz = plan.slabs[0].nz;
+  const mb = (sets.length * plan.slabs.length * 2 * plan.AW * plan.AH * nz) / 1048576;
+  const zinfo = plan.slabs.map((sl, i) => `${plan.slabs.length > 1 ? (i ? 'Верхний ярус' : 'Нижний ярус') : 'Высоты'}: ` +
     `${sl.z0.toFixed(0)}–${sl.z1.toFixed(0)} м, ${((sl.z1 - sl.z0) / sl.nz).toFixed(0)} м/воксель`).join('<br>');
   const warn = groupsInfo.dropped ? `<br><span class="warn">Разных слоёв больше ${MAX_GROUPS} — лишние не показаны</span>` : '';
-  return `Density volume: ${nx}×${ny} зон × ${slabs.length} яр. = <b>${nx * ny * slabs.length}</b>, ` +
-    `каждый ${tileRes}×${tileRes}×${slabs[0].nz} (RG8, всего ${mb.toFixed(0)} МБ)<br>` +
-    `Воксель по горизонтали: ${dxm.toFixed(0)} м<br>${zinfo}${warn}`;
+  const frames = sets.length > 1 ? `<br>Динамика: ${sets.length} ключевых кадра (разрешение снижено, чтобы уместить их в память)` : '';
+  return `Density volume: ${nx}×${ny} зон × ${plan.slabs.length} яр. = <b>${nx * ny * plan.slabs.length}</b>, ` +
+    `каждый ${tileRes}×${tileRes}×${nz} (RG8, всего ${mb.toFixed(0)} МБ)<br>` +
+    `Воксель по горизонтали: ${dxm.toFixed(0)} м<br>${zinfo}${warn}${frames}`;
 }
 
 // ---------------------------------------------------------------------------
-// Экспорт density volume выбранной зоны: uint8 0..255, файл .cvol
+// Экспорт density volume выбранной зоны (текущий ключевой кадр): uint8 0..255, файл .cvol
 //   [uint32 LE длина JSON][JSON-заголовок][ярусы подряд: x быстрее всего, затем z (с севера на юг), затем высота]
 // ---------------------------------------------------------------------------
 const copy = fsScene(S.copySliceFrag, { uSrc: { value: null }, uRegion: { value: new THREE.Vector4() }, uR: { value: 0 } });
 function exportZone() {
-  stepGeneration(true);
+  while (!sets[0].ready) stepGeneration(true);
   const { nx, ny } = state.grid;
   const tx = state.sel % nx, ty = Math.floor(state.sel / nx);
   const N = tileRes;
@@ -389,9 +481,9 @@ function exportZone() {
   const parts = [];
   const U = copy.mat.uniforms;
   U.uRegion.value.set(tx / nx, ty / ny, 1 / nx, 1 / ny);
-  for (const sl of slabs) {
+  plan.slabs.forEach((sl, j) => {
     const data = new Uint8Array(N * N * sl.nz);
-    U.uSrc.value = sl.rt.texture;
+    U.uSrc.value = sets[0].rts[j].texture;
     for (let k = 0; k < sl.nz; k++) {
       U.uR.value = (k + 0.5) / sl.nz;
       renderer.setRenderTarget(rt);
@@ -400,16 +492,16 @@ function exportZone() {
       for (let i = 0; i < N * N; i++) data[k * N * N + i] = px[i * 4];
     }
     parts.push(data);
-  }
+  });
   renderer.setRenderTarget(null);
   rt.dispose();
   const wx = nx * state.tileKm, wz = ny * state.tileKm;
   const header = {
     format: 'cloud-density-volume/1', zone: [tx, ty], grid: [nx, ny],
     originKm: [-wx / 2 + tx * state.tileKm, -wz / 2 + ty * state.tileKm], sizeKm: [state.tileKm, state.tileKm],
-    voxels: [N, N], slabs: slabs.map((sl) => ({ z0: sl.z0, z1: sl.z1, nz: sl.nz })),
+    voxels: [N, N], slabs: plan.slabs.map((sl) => ({ z0: sl.z0, z1: sl.z1, nz: sl.nz })),
     layers: state.zones[state.sel].layers.filter((l) => l.enabled).map(({ type, base, minT, range, oktas }) => ({ type, base, minT, range, oktas })),
-    blendKm: state.blendKm, seed: state.seed,
+    blendKm: state.blendKm, seed: state.seed, timeS: sets[0].t, windOffsetM: sets[0].off.toArray(),
     layout: 'uint8 density 0..255; per slab: x fastest, then z (north to south), then altitude (bottom to top)',
   };
   const json = new TextEncoder().encode(JSON.stringify(header, null, 1));
@@ -427,6 +519,7 @@ function exportZone() {
 // ---------------------------------------------------------------------------
 const radar = fsScene(S.radarFrag, {
   uVol: shared.uVol, uVolHi: shared.uVolHi, uSplitY: shared.uSplitY, uLoY: shared.uLoY, uHiY: shared.uHiY,
+  uVolB: shared.uVolB, uVolHiB: shared.uVolHiB, uMixB: shared.uMixB, uShiftA: shared.uShiftA, uShiftB: shared.uShiftB,
   uBoxMin: shared.uBoxMin, uBoxMax: shared.uBoxMax, uView: { value: new THREE.Vector4() },
 });
 const RADAR_PX = 300, RADAR_RIGHT = 16, RADAR_BOTTOM = 34;
@@ -447,7 +540,7 @@ function zoneLabel(i) {
 function drawRadarOverlay(time) {
   const dpr = devicePixelRatio;
   const W = RADAR_PX;
-  if (radarCanvas.width !== W * dpr) { radarCanvas.width = radarCanvas.height = W * dpr; }
+  if (radarCanvas.width !== W * dpr || radarCanvas.height !== W * dpr) { radarCanvas.width = radarCanvas.height = W * dpr; }
   const c = rctx;
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.clearRect(0, 0, W, W);
@@ -641,17 +734,66 @@ const ui = buildUI({
     startGeneration();
   },
   onExport: exportZone,
+  // вкл/выкл ветра и развития, а без динамики — и направление ветра: перегенерация;
+  // скорость, направление и ускорение при включённой динамике применяются к следующим кадрам
+  onDynamicsChanged: (restart) => { if (restart || !animOn()) startGeneration(); },
   onAtmosphereChanged: () => updateAtmosphere(),
-  onRenderChanged: () => {
-    shared.uExt.value = state.ext;
-    shared.uDensMul.value = state.densMul;
-    cloudMat.uniforms.uErode.value = state.erode;
-    boxHelper.visible = state.showBox;
-    applyQuality();
-  },
+  onRenderChanged: () => applyRender(),
+  onShare: () => shareLink(),
   onPreset: applyPreset,
   onCamera: setCameraView,
 });
+
+function applyRender() {
+  shared.uExt.value = state.ext;
+  shared.uDensMul.value = state.densMul;
+  cloudMat.uniforms.uErode.value = state.erode;
+  boxHelper.visible = state.showBox;
+  applyQuality();
+}
+
+// ---------------------------------------------------------------------------
+// Ссылка на конфигурацию (share.js): всё состояние — в "#c=..." адреса страницы
+// ---------------------------------------------------------------------------
+const TYPE_KEYS = Object.keys(CLOUD_TYPES);
+let lastCode = null;
+
+async function shareLink() {
+  const code = await encode(packState(state, camera, controls, TYPE_KEYS));
+  lastCode = code;
+  history.replaceState(null, '', `${location.pathname}#c=${code}`);
+  const url = location.href;
+  let copied = false;
+  try { await navigator.clipboard.writeText(url); copied = true; } catch { /* нет доступа к буферу — покажем поле */ }
+  ui.showShare(url, copied);
+}
+
+function applyConfig(c) {
+  const keys = ['tileKm', 'grid', 'blendKm', 'seed', 'resH', 'resV', 'slabMode', 'wind', 'windSpeed', 'windFrom', 'develop',
+    'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality'];
+  for (const k of keys) state[k] = c[k];
+  state.zones = c.zones.map((z) => ({ layers: z.layers.map(({ type, ...over }) => makeLayer(type, over)) }));
+  state.zones.forEach((z) => enforceNonOverlap(z.layers));
+  state.sel = c.sel;
+  ui.syncAll();
+  ui.refresh();
+  updateAtmosphere();
+  applyRender();
+  startGeneration();
+  if (c.camera) {
+    camera.position.set(c.camera[0], c.camera[1], c.camera[2]);
+    controls.target.set(c.camera[3], c.camera[4], c.camera[5]);
+    controls.update();
+  } else setCameraView('overview');
+}
+
+async function applyHash() {
+  const code = hashCode();
+  if (!code || code === lastCode) return false;
+  lastCode = code;
+  try { applyConfig(unpackState(await decode(code), TYPE_KEYS)); return true; } catch (e) { console.warn('ссылка:', e); return false; }
+}
+addEventListener('hashchange', applyHash);   // вставили другую ссылку в ту же вкладку
 
 window.clouds = { camera, controls, state }; // для отладки из консоли
 
@@ -681,22 +823,28 @@ function applyScene(scene) {
   setCameraView('overview');
 }
 
+// порядок при открытии: ссылка "#c=…" → сцена из метеомодели "?scene=…" → пресет по умолчанию
 const sceneParam = new URLSearchParams(location.search).get('scene');
 let sceneApplied = false;
-if (sceneParam) {
+if (sceneParam && !hashCode()) {
   try { applyScene(JSON.parse(sceneParam)); sceneApplied = true; } catch (e) { console.warn('scene:', e); }
 }
-if (!sceneApplied) applyPreset('congestusCirrus');
+if (!sceneApplied) {
+  if (hashCode()) applyHash().then((ok) => { if (!ok) applyPreset('congestusCirrus'); });
+  else applyPreset('congestusCirrus');
+}
 
 let last = performance.now(), fpsAcc = 0, fpsN = 0, fps = 0;
 renderer.setAnimationLoop((time) => {
   const dt = (time - last) / 1000; last = time;
+  if (!plan) return;                       // ждём разбора ссылки
   fpsAcc += dt; fpsN++;
   if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
 
   if (state.animateSun) { state.sunAz = (state.sunAz + dt * 12) % 360; ui.syncSun(); updateAtmosphere(); }
 
   stepGeneration();
+  updateAnim(dt);
   controls.update();
   if (camera.position.y < 0.002) camera.position.y = 0.002;
   sky.position.copy(camera.position);
@@ -719,6 +867,8 @@ renderer.setAnimationLoop((time) => {
   drawRadarOverlay(time);
 
   const alt = (camera.position.y * 1000).toFixed(0);
-  ui.setHud(`${fps.toFixed(0)} FPS · камера ${alt} м` +
-    (job.active ? ` · генерация ${Math.round((job.done / job.total) * 100)}%` : ` · объём за ${job.lastMs.toFixed(0)} мс`));
+  const mm = Math.floor(anim.t / 60), ss = Math.floor(anim.t % 60);
+  const sim = animOn() ? ` · время +${mm}:${String(ss).padStart(2, '0')}` : '';
+  const genTxt = !sets[0].ready ? ` · генерация ${Math.round((job.done / job.total) * 100)}%` : animOn() ? '' : ` · объём за ${job.lastMs.toFixed(0)} мс`;
+  ui.setHud(`${fps.toFixed(0)} FPS · камера ${alt} м${sim}${genTxt}`);
 });

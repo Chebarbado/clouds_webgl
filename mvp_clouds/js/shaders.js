@@ -106,16 +106,25 @@ vec3 skyRadiance(float altKm, vec3 rd, vec3 sd, float betaM) {
 // Доступ к density volume в мировой точке (км, y — вверх).
 // Мир по горизонтали — атлас смежных зон (s = x, t = z); по вертикали — один или два яруса
 // (uVol — нижний, uVolHi — верхний) со своим вертикальным разрешением; граница ярусов uSplitY.
+// Динамика: облака из ключевого кадра A сдвинуты по ветру на uShiftA (км), из кадра B — на uShiftB;
+// результат — смесь кадров с весом uMixB (при uMixB = 0 кадр B не читается).
 const volume = /* glsl */`
 uniform sampler3D uVol;
 uniform sampler3D uVolHi;
-uniform float uSplitY;
-uniform vec2 uLoY, uHiY;
-vec2 volRG(vec3 p) {
+uniform sampler3D uVolB;
+uniform sampler3D uVolHiB;
+uniform float uSplitY, uMixB;
+uniform vec2 uLoY, uHiY, uShiftA, uShiftB;
+vec2 volSet(sampler3D lo, sampler3D hi, vec3 p) {
   if (any(lessThan(p, uBoxMin)) || any(greaterThan(p, uBoxMax))) return vec2(0.);
   vec2 xz = (p.xz - uBoxMin.xz) / (uBoxMax.xz - uBoxMin.xz);
-  if (p.y < uSplitY) return textureLod(uVol, vec3(xz, (p.y - uLoY.x) / (uLoY.y - uLoY.x)), 0.).rg;
-  return textureLod(uVolHi, vec3(xz, (p.y - uHiY.x) / (uHiY.y - uHiY.x)), 0.).rg;
+  if (p.y < uSplitY) return textureLod(lo, vec3(xz, (p.y - uLoY.x) / (uLoY.y - uLoY.x)), 0.).rg;
+  return textureLod(hi, vec3(xz, (p.y - uHiY.x) / (uHiY.y - uHiY.x)), 0.).rg;
+}
+vec2 volRG(vec3 p) {
+  vec2 a = volSet(uVol, uVolHi, p - vec3(uShiftA.x, 0., uShiftA.y));
+  if (uMixB <= 0.) return a;
+  return mix(a, volSet(uVolB, uVolHiB, p - vec3(uShiftB.x, 0., uShiftB.y)), uMixB);
 }
 float volD(vec3 p) { return volRG(p).r; }
 `;
@@ -166,13 +175,16 @@ uniform vec4 uGC[8];
 uniform vec4 uGD[8];
 uniform vec4 uGE[8];
 uniform vec4 uGF[8];
-uniform vec4 uGZ[8];              // (zmin, zmax) группы по всем зонам — для быстрого отсечения
+uniform vec4 uGZ[8];              // (zmin, zmax, время жизни облака, с) группы
+uniform vec2 uOff;                // снос ветром к моменту кадра, м (облака считаются в сносимой системе координат)
+uniform float uTime;              // время кадра, с
+uniform float uDev;               // 1 — развитие облаков включено
 ${noise}
 
 // Высоты и покрытие группы g в горизонтальной точке xy: билинейная смесь 2×2 ближайших зон,
 // переход шириной uBlend вокруг каждой границы зон (гладкий, smoothstep)
 vec4 blendA(int g, vec2 xy) {
-  vec2 t = xy / uTile - .5;
+  vec2 t = (xy + uOff) / uTile - .5;                 // зоны неподвижны, облака сносятся через них
   vec2 b = clamp(floor(t), vec2(0.), max(uGrid - 2., vec2(0.)));
   vec2 s = smoothstep(0., 1., clamp((t - b - .5) * uTile / uBlend + .5, 0., 1.));
   if (uGrid.x < 1.5) s.x = 0.;
@@ -187,6 +199,11 @@ vec4 blendA(int g, vec2 xy) {
 float smax(float a, float b, float k) { float h = max(k - abs(a - b), 0.) / k; return max(a, b) + h * h * k * .25; }
 float coverMask(float w, float cov) { return cov > .99 ? 1. : smoothstep(1. - cov - .12, 1. - cov + .12, w); }
 float wfield(vec2 q) { return clamp((fbm2(q, 5) - .5) * 2.4 + .5, 0., 1.); }
+// то же с эволюцией во времени (третья координата шума — время в долях жизни облака)
+float wfieldT(vec2 q, float life) {
+  if (uDev <= 0.) return wfield(q);
+  return clamp((fbm3(vec3(q, uTime / life), 5) - .5) * 2.4 + .5, 0., 1.);
+}
 
 // Радиус облака (в долях R) на относительной высоте h, <0 — вне облака
 float profileR(float h, vec4 C) {
@@ -226,7 +243,7 @@ vec2 cumulo(vec3 P, int li) {
   vec3 Pw = P + vec3(warp.xy, warp.z * zf);
   float anvTop = C.w > 0. ? fbm2(P.xy / 4000. + seed * .3, 3) : 0.;     // волнистость верха наковальни
   vec2 gi = floor(Pw.xy / G);
-  float best = -1e9, bestS = -1e9, bestH = 0., bestAnv = 0., bestBase = base, bestMam = 0.;
+  float best = -1e9, bestS = -1e9, bestH = 0., bestAnv = 0., bestBase = base, bestMam = 0., bestDecay = 0.;
   for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
     vec2 c = gi + vec2(float(i), float(j));
     vec4 r = hash42(c + seed);
@@ -239,10 +256,20 @@ vec2 cumulo(vec3 P, int li) {
     }
     // параметры зон — в центре ячейки: в зоне перехода облако целиком есть или нет, а не режется
     vec4 Ac = blendA(li, ctr);
-    if (r.z > Ac.w * 1.25 * (.45 + 1.1 * wm) * rows) continue;  // ячейка пустая
+    // мягкое присутствие: у порога покрытия облако маленькое, а не исчезает скачком (важно при сносе через зоны)
+    float grow = smoothstep(-.06, .06, Ac.w * 1.25 * (.45 + 1.1 * wm) * rows - r.z);
+    if (grow <= 0.) continue;                                    // ячейка пустая
+    // жизненный цикл: зарождение → рост вверх и вширь → зрелость → распад; фаза у каждой ячейки своя
+    float decay = 0.;
+    if (uDev > 0.) {
+      float ph = fract(uTime / uGZ[li].z + hash12(c * 5.7 + seed));
+      grow *= smoothstep(0., .3, ph) * (1. - smoothstep(.72, 1., ph));
+      decay = smoothstep(.65, 1., ph);
+      if (grow <= .02) continue;
+    }
     // размер облака: много мелких, мало крупных; ширина следует из высоты и пропорций типа
     float sz = pow(r.w, E.x);
-    float H = Ac.y + Ac.z * sz;
+    float H = (Ac.y + Ac.z * sz) * mix(.25, 1., grow);
     float R = min(H / (2. * aspect) * mix(.8, 1.25, hash12(c * 1.37 + seed + 5.1)), G * 1.1);
     float dc = length(Pw.xy - ctr);
     if (dc > R * (1.6 + C.w * 1.6)) continue;
@@ -295,7 +322,7 @@ vec2 cumulo(vec3 P, int li) {
     float kb = .15 * R * vs + 20.;
     s = -smax(-s, -(P.z - bc0) * 1.5, kb);
     best = smax(best, s, .25 * R);                                         // соседние облака сливаются в массивы
-    if (s > bestS) { bestS = s; bestH = max(h, 0.); bestBase = bc0; bestMam = mam; bestAnv = C.w > 0. ? smoothstep(C.z - .05, C.z + .1, h) * (1. - mam) : 0.; }
+    if (s > bestS) { bestS = s; bestH = max(h, 0.); bestBase = bc0; bestMam = mam; bestDecay = decay; bestAnv = C.w > 0. ? smoothstep(C.z - .05, C.z + .1, h) * (1. - mam) : 0.; }
   }
   float amp = D.x;
   vec2 res = vec2(0.);
@@ -312,6 +339,7 @@ vec2 cumulo(vec3 P, int li) {
     float bn = fbm2(P.xy / (amp * 5. + 200.) + seed * .7, 3) * (amp * .35 + 20.);
     d *= smoothstep(0., .35 * amp + 40., P.z - bestBase - bn);
     d *= B.w * (.7 + .3 * fb) * mix(1., .65, bestAnv);                    // наковальня реже и тоньше
+    d *= 1. - .6 * bestDecay;                                             // распадающееся облако редеет
     if (bestAnv > 0.) {
       // волокнистая текстура наковальни, вытянутая по ветру (видна сверху)
       vec2 xy = vec2(dot(P.xy, uWind), dot(P.xy, vec2(-uWind.y, uWind.x)));
@@ -320,7 +348,7 @@ vec2 cumulo(vec3 P, int li) {
     }
     float bl = mix(F.z, F.y, smoothstep(.05, .5, bestH));                // рыхлый низ, клубящийся верх
     bl = mix(mix(bl, .05, bestAnv), .85, bestMam);                        // наковальня — волокнистая, mammatus — гладкие мешки
-    res = vec2(d, bl);
+    res = vec2(d, mix(bl, .15, bestDecay));                               // и становится рваным
   }
   // палуба под ячейками (Sc): сплошной бугристый слой при большом количестве
   if (F.w > 0.) {
@@ -340,7 +368,7 @@ vec2 sheet(vec3 P, int li) {
   float rag = D.z * A.y, wave = F.w * A.y;
   if (P.z < base - rag - wave - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
   vec2 q = P.xy / B.y + seed * .21;
-  float mask = coverMask(wfield(q), cov);
+  float mask = coverMask(wfieldT(q, uGZ[li].z), cov);
   if (mask <= .001) return vec2(0.);
   float tn = fbm2(q * 2.3 + 7.7, 4);
   float thick = E.z > .5 ? A.y + A.z * (.45 + .1 * tn) : (A.y + A.z * tn) * mix(.35, 1., sqrt(mask));
@@ -363,11 +391,11 @@ vec2 cirrus(vec3 P, int li) {
   float base = A.x, cov = A.w, seed = E.w;
   if (P.z < base - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
   vec2 xy = vec2(dot(P.xy, uWind), dot(P.xy, vec2(-uWind.y, uWind.x)));   // x — вдоль ветра
-  vec3 q = vec3(xy.x / 5000., xy.y / 600., (P.z - base) / 400.) + seed;
+  vec3 q = vec3(xy.x / 5000., xy.y / 600., (P.z - base) / 400. + uDev * uTime / uGZ[li].z) + seed;
   q.y += 1.4 * fbm3(q * vec3(.6, .25, .8) + 3.1, 3);
   q.x += .5 * fbm3(q * vec3(1., .5, 1.) + 9.2, 2);
   float n = fbm3(q, 5);
-  float mask = coverMask(wfield(P.xy / B.y + seed * .3), cov);
+  float mask = coverMask(wfieldT(P.xy / B.y + seed * .3, uGZ[li].z), cov);
   float thick = A.y + A.z * fbm2(P.xy / 6000. + 4.2, 3);
   float hz = (P.z - base) / thick;
   float v = smoothstep(0., .2, hz) * (1. - smoothstep(.65, 1., hz));
@@ -385,7 +413,8 @@ void main() {
     if (li >= uNG) break;
     if (P.z < uGZ[li].x - 1. || P.z > uGZ[li].y + 1.) continue;
     float k = uGB[li].x;
-    vec2 v = k < .5 ? cumulo(P, li) : (k < 1.5 ? sheet(P, li) : cirrus(P, li));
+    vec3 Pm = P - vec3(uOff, 0.);
+    vec2 v = k < .5 ? cumulo(Pm, li) : (k < 1.5 ? sheet(Pm, li) : cirrus(Pm, li));
     if (v.x > d.x) d = v;
   }
   gl_FragColor = vec4(clamp(d.x * edge, 0., 1.), d.y, 0., 1.);
@@ -434,6 +463,8 @@ precision highp float;
 precision highp sampler3D;
 uniform sampler3D uDetail;
 uniform float uDetailScale, uErode;
+uniform vec2 uDetailShift;    // текущий снос ветром, км
+uniform float uBoil;          // подъём турбулентности при развитии, км
 uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uAmbBottom, uHazeColor;
 uniform float uExt, uDensMul, uStepNear, uStepGrow, uLightStep, uHazeBeta, uExposure;
 uniform int uMaxSteps;
@@ -445,7 +476,7 @@ float D(vec3 p) { return volD(p); }
 vec2 D2(vec3 p) { return volRG(p); }
 // плотность с эрозией краёв детализирующим шумом (Schneider): клубы при bill=1, волокна при bill=0
 float erodeD(vec2 v, vec3 p, float t, float fade) {
-  vec3 dp = p / uDetailScale;
+  vec3 dp = (p - vec3(uDetailShift.x, uBoil * v.y, uDetailShift.y)) / uDetailScale;
   // завихрение координат низкочастотным шумом: турбулентные, а не "пузырчатые" края; сильнее у волокон
   vec2 cn = textureLod(uDetail, dp * .21 + .13, 0.).rg - .5;
   dp += vec3(cn.x, cn.y, cn.x - cn.y) * mix(1.1, .45, v.y);

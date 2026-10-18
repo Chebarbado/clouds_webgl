@@ -23,102 +23,103 @@
 //   rag         — рваность нижней границы (доля мин. толщины)
 //   wave        — волнистость основания (доля мин. толщины), As undulatus
 //   flat        — плоская верхняя граница
-// Общие: density — максимальная плотность, rows — гряды, skew — распределение размеров
+// Общие: life — время жизни облака (кучевые) или характерное время изменения рисунка (слоистые, перистые), с;
+//   density — максимальная плотность, rows — гряды, skew — распределение размеров
 //   (>1 — в основном мелкие), smoothTop — гладкая вершина (Cb calvus).
 
 const T = (o) => ({
   aspect: 0.5, spacing: 2.5, taper: 1, dome: 0.5, anvilStart: 0, anvilSpread: 0,
   billowAmp: 0.2, billowScale: 0.3, billowTop: 1, billowBottom: 0.3, deck: 0,
-  cell: 0, rag: 0, wave: 0, flat: 0, density: 0.8, rows: 0, skew: 1, smoothTop: 0, ...o,
+  cell: 0, rag: 0, wave: 0, flat: 0, density: 0.8, rows: 0, skew: 1, smoothTop: 0, life: 1800, ...o,
 });
 
 export const CLOUD_TYPES = {
   // Ac: мелкие "барашки" с просветами, рядами/сеткой, края мягкие
   Altocumulus: T({
-    label: 'Altocumulus (высококучевые)', kind: 'cumulo',
+    label: 'Altocumulus (высококучевые)', kind: 'cumulo', life: 1200,
     defaults: { base: 3500, minT: 150, range: 350, oktas: 5 },
     aspect: 0.35, spacing: 2.1, taper: 0.9, dome: 0.3, billowAmp: 0.25, billowScale: 0.45,
     billowTop: 0.7, billowBottom: 0.45, density: 0.7, rows: 0.6,
   }),
   // Sc: бугристое море, валы с тёмными промежутками, сверху — почти сплошная палуба
   Stratocumulus: T({
-    label: 'Stratocumulus (слоисто-кучевые)', kind: 'cumulo',
+    label: 'Stratocumulus (слоисто-кучевые)', kind: 'cumulo', life: 1800,
     defaults: { base: 900, minT: 300, range: 500, oktas: 6 },
     aspect: 0.28, spacing: 1.6, taper: 0.9, dome: 0.4, billowAmp: 0.25, billowScale: 0.45,
     billowTop: 0.8, billowBottom: 0.35, density: 0.8, rows: 0.3, deck: 0.8,
   }),
   // Cu humilis: в 2–3 раза шире высоты, плоское основание, рваные доли
   CumulusHumilis: T({
-    label: 'Cumulus Humilis (плоские кучевые)', kind: 'cumulo',
+    label: 'Cumulus Humilis (плоские кучевые)', kind: 'cumulo', life: 900,
     defaults: { base: 1100, minT: 250, range: 350, oktas: 3 },
     aspect: 0.3, spacing: 3.0, taper: 0.85, dome: 0.0, billowAmp: 0.22, billowScale: 0.4,
     billowTop: 0.9, billowBottom: 0.3, density: 0.85, skew: 1.6,
   }),
   // Cu mediocris: высота ~ ширине, сливаются в массивы, бугристые вершины
   CumulusMediocris: T({
-    label: 'Cumulus Mediocris (средние кучевые)', kind: 'cumulo',
+    label: 'Cumulus Mediocris (средние кучевые)', kind: 'cumulo', life: 1200,
     defaults: { base: 1100, minT: 700, range: 900, oktas: 4 },
     aspect: 0.55, spacing: 2.4, taper: 0.8, dome: 0.3, billowAmp: 0.22, billowScale: 0.35,
     density: 0.9, skew: 1.4,
   }),
   // Cu congestus: башни разной высоты из широкого основания, резкая "цветная капуста"
   CumulusCongestus: T({
-    label: 'Cumulus Congestus (мощные кучевые)', kind: 'cumulo',
+    label: 'Cumulus Congestus (мощные кучевые)', kind: 'cumulo', life: 1800,
     defaults: { base: 1000, minT: 2000, range: 2500, oktas: 4 },
     aspect: 0.85, spacing: 2.6, taper: 0.7, dome: 0.45, billowAmp: 0.2, billowScale: 0.3,
     density: 0.95, skew: 1.2,
   }),
   CumulusTowering: T({
-    label: 'Towering Cumulus (башенные)', kind: 'cumulo',
+    label: 'Towering Cumulus (башенные)', kind: 'cumulo', life: 2400,
     defaults: { base: 1000, minT: 4000, range: 3500, oktas: 3 },
     aspect: 1.15, spacing: 2.9, taper: 0.7, dome: 0.6, billowAmp: 0.18, billowScale: 0.28, density: 1.0,
   }),
   // Cb calvus: массивный купол, вершина гладкая (кристаллизация), без наковальни
   CumulonimbusCalvus: T({
-    label: 'Cumulonimbus Calvus (лысые Cb)', kind: 'cumulo',
+    label: 'Cumulonimbus Calvus (лысые Cb)', kind: 'cumulo', life: 3000,
     defaults: { base: 900, minT: 6500, range: 3000, oktas: 3 },
     aspect: 1.1, spacing: 3.3, taper: 0.85, dome: 0.75, billowAmp: 0.16, billowScale: 0.25,
     billowTop: 0.7, billowBottom: 0.25, density: 1.0, skew: 0.7, smoothTop: 0.8,
   }),
   // Cb incus: широкая тонкая наковальня с плоским верхом и волокнистыми краями, снос по ветру
   CumulonimbusIncus: T({
-    label: 'Cumulonimbus Incus (Cb с наковальней)', kind: 'cumulo',
+    label: 'Cumulonimbus Incus (Cb с наковальней)', kind: 'cumulo', life: 3600,
     defaults: { base: 900, minT: 8500, range: 2500, oktas: 3 },
     aspect: 1.3, spacing: 4.2, taper: 0.85, dome: 0.97, anvilStart: 0.78, anvilSpread: 3.0,
     billowAmp: 0.15, billowScale: 0.25, billowBottom: 0.25, density: 1.0, skew: 0.6,
   }),
   AnvilHead: T({
-    label: 'Anvil Head (наковальня)', kind: 'cumulo',
+    label: 'Anvil Head (наковальня)', kind: 'cumulo', life: 3600,
     defaults: { base: 900, minT: 9000, range: 2000, oktas: 2 },
     aspect: 1.3, spacing: 4.6, taper: 0.85, dome: 0.98, anvilStart: 0.7, anvilSpread: 3.4,
     billowAmp: 0.14, billowScale: 0.25, billowBottom: 0.25, density: 0.9, skew: 0.5,
   }),
   // Ns: бесформенный серый, рваное основание
   Nimbostratus: T({
-    label: 'Nimbostratus (слоисто-дождевые)', kind: 'sheet',
+    label: 'Nimbostratus (слоисто-дождевые)', kind: 'sheet', life: 5400,
     defaults: { base: 700, minT: 2500, range: 2000, oktas: 8 },
     cell: 9000, billowScale: 700, density: 0.85, rag: 0.35, billowTop: 0.25,
   }),
   // As: ровный серый, волнистое основание
   Altostratus: T({
-    label: 'Altostratus (высокослоистые)', kind: 'sheet',
+    label: 'Altostratus (высокослоистые)', kind: 'sheet', life: 5400,
     defaults: { base: 3500, minT: 900, range: 1100, oktas: 7 },
     cell: 12000, billowScale: 1200, density: 0.55, rag: 0.05, wave: 0.3, billowTop: 0.15,
   }),
   // St: ровное "море", сверху гладкое
   Stratus: T({
-    label: 'Stratus (слоистые)', kind: 'sheet',
+    label: 'Stratus (слоистые)', kind: 'sheet', life: 3600,
     defaults: { base: 300, minT: 200, range: 300, oktas: 8 },
     cell: 5000, billowScale: 500, density: 0.6, rag: 0.12, billowTop: 0.2,
   }),
   NimbostratusFlat: T({
-    label: 'Nimbostratus Flat (ровные Ns)', kind: 'sheet',
+    label: 'Nimbostratus Flat (ровные Ns)', kind: 'sheet', life: 7200,
     defaults: { base: 700, minT: 2500, range: 400, oktas: 8 },
     cell: 15000, billowScale: 900, density: 0.85, flat: 1, billowTop: 0.2,
   }),
   // Ci: тонкие волокна, вытянутые ветром
   Cirrus: T({
-    label: 'Cirrus (перистые)', kind: 'cirrus',
+    label: 'Cirrus (перистые)', kind: 'cirrus', life: 2400,
     defaults: { base: 8500, minT: 300, range: 700, oktas: 4 },
     cell: 9000, density: 0.35, billowTop: 0,
   }),

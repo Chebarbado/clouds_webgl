@@ -14,6 +14,8 @@
   <button id="togglePanel" title="Скрыть/показать панель">☰</button>
   <aside id="panel">
     <h1>Volumetric Clouds</h1>
+    <button id="shareBtn" class="share" title="Скопировать ссылку на текущую конфигурацию облаков, солнца и камеры">🔗 Поделиться ссылкой</button>
+    <div class="shareBox" style="display:none"><input id="shareOut" readonly><div id="shareMsg" class="muted"></div></div>
     <a class="muted" href="meteo.html" style="color:#5fb4ff">Метеомодель облакообразования →</a>
 
     <section>
@@ -46,6 +48,16 @@
       <div id="layers"></div>
       <button id="addLayer">+ Добавить слой</button>
       <div id="layerWarn" class="warn"></div>
+    </section>
+
+    <section>
+      <h2>Динамика</h2>
+      <label class="check"><input type="checkbox" id="windOn"> Ветер — перенос облаков</label>
+      <div id="windCtl"></div>
+      <label class="check"><input type="checkbox" id="devOn"> Развитие облаков — жизненный цикл</label>
+      <div id="timeCtl"></div>
+      <div class="muted">Кучевые зарождаются, растут, распадаются; слоистые и перистые медленно меняют рисунок.
+        Направление ветра также разворачивает снос наковален, волокна Ci и гряды.</div>
     </section>
 
     <section>
