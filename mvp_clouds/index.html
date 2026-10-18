@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Volumetric Clouds MVP</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
+  </script>
+</head>
+<body>
+  <button id="togglePanel" title="Скрыть/показать панель">☰</button>
+  <aside id="panel">
+    <h1>Volumetric Clouds</h1>
+
+    <section>
+      <h2>Пресет</h2>
+      <select id="preset"></select>
+    </section>
+
+    <section>
+      <h2>Слои облачности</h2>
+      <div id="layers"></div>
+      <button id="addLayer">+ Добавить слой</button>
+      <div id="layerWarn" class="warn"></div>
+    </section>
+
+    <section>
+      <h2>Видимость</h2>
+      <div id="atmo"></div>
+    </section>
+
+    <section>
+      <h2>Солнце</h2>
+      <div id="sun"></div>
+      <label class="check"><input type="checkbox" id="animSun"> Вращать солнце</label>
+    </section>
+
+    <section>
+      <h2>Камера</h2>
+      <div class="btns">
+        <button data-cam="overview">Обзор</button>
+        <button data-cam="ground">С земли</button>
+        <button data-cam="top">Сверху</button>
+        <button data-cam="side">Сбоку</button>
+        <button data-cam="closeup">Крупно</button>
+        <button data-cam="inside">В облаке</button>
+        <button data-cam="above">Над облаками</button>
+        <button data-cam="below">Под облаками</button>
+      </div>
+      <div class="muted">ЛКМ — вращение, ПКМ — сдвиг, колесо — зум. Клик по радару переносит точку обзора.</div>
+    </section>
+
+    <section>
+      <h2>Density volume</h2>
+      <div class="grid2">
+        <label>Область<select id="domain">
+          <option value="16">16 км</option><option value="24">24 км</option><option value="32">32 км</option>
+          <option value="48">48 км</option><option value="64">64 км</option>
+        </select></label>
+        <label>Гориз. разрешение<select id="resH">
+          <option value="256">256²</option><option value="384">384²</option><option value="512">512²</option>
+        </select></label>
+        <label>Верт. разрешение<select id="resV">
+          <option value="96">96</option><option value="128">128</option><option value="192">192</option><option value="256">256</option>
+        </select></label>
+        <label>Seed<span class="row"><input id="seed" type="number"><button id="reseed" title="Случайный seed">🎲</button></span></label>
+      </div>
+      <div id="info" class="muted"></div>
+    </section>
+
+    <section>
+      <h2>Рендер</h2>
+      <label>Качество<select id="quality">
+        <option value="low">Низкое</option><option value="medium">Среднее</option><option value="high">Высокое</option>
+      </select></label>
+      <div id="render"></div>
+      <label class="check"><input type="checkbox" id="showBox"> Показать границы объёма</label>
+    </section>
+  </aside>
+
+  <div id="hud"></div>
+  <div id="radar">
+    <div id="radarTitle">Метеорадар · dBZ</div>
+    <canvas id="radarOverlay"></canvas>
+    <div id="legend">
+      <span style="background:#04e9e7">5</span><span style="background:#019ff4">10</span><span style="background:#0300f4">15</span>
+      <span style="background:#02fd02">20</span><span style="background:#01c501">25</span><span style="background:#008e00">30</span>
+      <span style="background:#fdf802">35</span><span style="background:#e5bc00">40</span><span style="background:#fd9500">45</span>
+      <span style="background:#fd0000">50</span><span style="background:#d40000">55</span><span style="background:#bc0000">60</span>
+      <span style="background:#f800fd">65</span>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

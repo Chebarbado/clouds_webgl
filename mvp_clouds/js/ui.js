@@ -1,0 +1,157 @@
+// Панель управления (чистый DOM).
+
+const $ = (id) => document.getElementById(id);
+
+function slider(label, min, max, step, value, fmt, onInput, onChange) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ctl';
+  wrap.innerHTML = `<div class="ctl-head"><span>${label}</span><b></b></div><input type="range" min="${min}" max="${max}" step="${step}">`;
+  const input = wrap.querySelector('input'), out = wrap.querySelector('b');
+  input.value = value;
+  out.textContent = fmt(+value);
+  input.addEventListener('input', () => { out.textContent = fmt(+input.value); onInput(+input.value); });
+  if (onChange) input.addEventListener('change', () => onChange(+input.value));
+  wrap.set = (v) => { input.value = v; out.textContent = fmt(+v); };
+  return wrap;
+}
+
+const m = (v) => `${v} м`;
+
+export function buildUI(ctx) {
+  const { state, CLOUD_TYPES, PRESETS, MAX_LAYERS } = ctx;
+
+  // --- пресеты
+  const presetSel = $('preset');
+  presetSel.innerHTML = '<option value="">— выбрать —</option>' +
+    Object.entries(PRESETS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('');
+  presetSel.addEventListener('change', () => { if (presetSel.value) ctx.onPreset(presetSel.value); });
+
+  // --- слои
+  const layersEl = $('layers');
+  const warn = $('layerWarn');
+  const typeOptions = Object.entries(CLOUD_TYPES).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('');
+
+  function settle() {
+    if (ctx.enforceNonOverlap()) {
+      warn.textContent = 'Слои не должны пересекаться по вертикали — нижняя граница поднята.';
+      renderLayers();
+    } else warn.textContent = '';
+    ctx.onLayersChanged();
+  }
+
+  function renderLayers() {
+    layersEl.innerHTML = '';
+    state.layers.forEach((l, idx) => {
+      const card = document.createElement('div');
+      card.className = 'layer' + (l.enabled ? '' : ' off');
+      card.innerHTML = `
+        <div class="layer-head">
+          <label><input type="checkbox" ${l.enabled ? 'checked' : ''}> Слой ${idx + 1}</label>
+          <button class="del" title="Удалить слой">✕</button>
+        </div>
+        <select class="type">${typeOptions}</select>`;
+      const sel = card.querySelector('.type');
+      sel.value = l.type;
+      const top = document.createElement('div');
+      top.className = 'muted';
+      const updTop = () => { top.textContent = `Верхняя граница до ${ctx.layerTop(l)} м`; };
+      const live = (key) => (v) => { l[key] = v; updTop(); ctx.onLayersChanged(); };
+      card.append(
+        slider('Нижняя граница', 0, 12000, 50, l.base, m, live('base'), settle),
+        slider('Мин. толщина', 50, 9000, 50, l.minT, m, live('minT'), settle),
+        slider('Диапазон толщины', 0, 6000, 50, l.range, m, live('range'), settle),
+        slider('Количество (окты)', 1, 8, 1, l.oktas, (v) => `${v}/8`, live('oktas')),
+        top,
+      );
+      updTop();
+      card.querySelector('input[type=checkbox]').addEventListener('change', (e) => {
+        l.enabled = e.target.checked;
+        card.classList.toggle('off', !l.enabled);
+        settle();
+      });
+      sel.addEventListener('change', () => {
+        Object.assign(l, { type: sel.value }, CLOUD_TYPES[sel.value].defaults);
+        ctx.enforceNonOverlap();
+        renderLayers();
+        ctx.onLayersChanged();
+      });
+      card.querySelector('.del').addEventListener('click', () => {
+        state.layers.splice(idx, 1);
+        renderLayers();
+        ctx.onLayersChanged();
+      });
+      layersEl.append(card);
+    });
+    $('addLayer').disabled = state.layers.length >= MAX_LAYERS;
+  }
+
+  $('addLayer').addEventListener('click', () => {
+    const top = Math.max(0, ...state.layers.filter((l) => l.enabled).map(ctx.layerTop));
+    const type = top < 3000 ? 'Altocumulus' : 'Cirrus';
+    const l = ctx.makeLayer(type);
+    if (l.base < top + 100) l.base = Math.ceil((top + 200) / 50) * 50;
+    state.layers.push(l);
+    settle();
+    renderLayers();
+  });
+
+  // --- атмосфера
+  const visToSlider = (v) => Math.log10(v);
+  const atmEl = $('atmo');
+  const visFmt = (s) => { const v = 10 ** s; return v < 1 ? `${(v * 1000).toFixed(0)} м` : `${v.toFixed(v < 10 ? 1 : 0)} км`; };
+  atmEl.append(
+    slider('Видимость (оптическая, МДВ)', -0.7, 2, 0.01, visToSlider(state.visibilityKm), visFmt,
+      (s) => { state.visibilityKm = 10 ** s; ctx.onAtmosphereChanged(); }),
+  );
+
+  // --- солнце
+  const sunEl = $('sun');
+  const az = slider('Азимут', 0, 360, 1, state.sunAz, (v) => `${v.toFixed(0)}°`, (v) => { state.sunAz = v; ctx.onAtmosphereChanged(); });
+  const el = slider('Высота', -5, 90, 0.5, state.sunEl, (v) => `${v}°`, (v) => { state.sunEl = v; ctx.onAtmosphereChanged(); });
+  sunEl.append(az, el);
+  $('animSun').addEventListener('change', (e) => { state.animateSun = e.target.checked; });
+
+  // --- камера
+  document.querySelectorAll('[data-cam]').forEach((b) => b.addEventListener('click', () => ctx.onCamera(b.dataset.cam)));
+
+  // --- объём
+  const bindSel = (id, key, cb) => {
+    const s = $(id);
+    s.value = String(state[key]);
+    s.addEventListener('change', () => { state[key] = +s.value; cb(); });
+    return s;
+  };
+  const domSel = bindSel('domain', 'domainKm', ctx.onVolumeChanged);
+  bindSel('resH', 'resH', ctx.onVolumeChanged);
+  bindSel('resV', 'resV', ctx.onVolumeChanged);
+  const seedIn = $('seed');
+  seedIn.value = state.seed;
+  seedIn.addEventListener('change', () => { state.seed = +seedIn.value || 0; ctx.onVolumeChanged(); });
+  $('reseed').addEventListener('click', () => {
+    state.seed = Math.floor(Math.random() * 10000);
+    seedIn.value = state.seed;
+    ctx.onVolumeChanged();
+  });
+
+  // --- рендер
+  const renEl = $('render');
+  const q = $('quality');
+  q.value = state.quality;
+  q.addEventListener('change', () => { state.quality = q.value; ctx.onRenderChanged(); });
+  renEl.append(
+    slider('Плотность', 0.1, 3, 0.05, state.densMul, (v) => v.toFixed(2), (v) => { state.densMul = v; ctx.onRenderChanged(); }),
+    slider('Экстинкция, 1/км', 2, 80, 1, state.ext, (v) => v.toFixed(0), (v) => { state.ext = v; ctx.onRenderChanged(); }),
+    slider('Детализация краёв', 0, 1.5, 0.05, state.erode, (v) => v.toFixed(2), (v) => { state.erode = v; ctx.onRenderChanged(); }),
+    slider('Экспозиция', 0.3, 3, 0.05, state.exposure, (v) => v.toFixed(2), (v) => { state.exposure = v; ctx.onAtmosphereChanged(); }),
+  );
+  $('showBox').addEventListener('change', (e) => { state.showBox = e.target.checked; ctx.onRenderChanged(); });
+
+  $('togglePanel').addEventListener('click', () => document.body.classList.toggle('panel-hidden'));
+
+  return {
+    refresh() { domSel.value = String(state.domainKm); presetSel.value = ''; warn.textContent = ''; renderLayers(); },
+    syncSun() { az.set(state.sunAz); },
+    updateInfo(html) { $('info').innerHTML = html; },
+    setHud(text) { $('hud').textContent = text; },
+  };
+}

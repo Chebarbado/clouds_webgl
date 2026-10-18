@@ -1,0 +1,12 @@
+# личные и служебные файлы — не для публичного репозитория
+/tools/
+/.agentstower/
+*.m4a
+/*.txt
+/images/1.bmp
+/images/2.bmp
+/images/cool_*.png
+GOAL.md
+TASKS.md
+TESTING.md
+__pycache__/

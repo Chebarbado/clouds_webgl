@@ -1,0 +1,655 @@
+// GLSL-шейдеры. Все материалы — THREE.ShaderMaterial (WebGL2, GLSL ES 3.0 через префикс three.js).
+
+const noise = /* glsl */`
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float hash13(vec3 p3) { p3 = fract(p3 * .1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
+vec3 hash33(vec3 p3) { p3 = fract(p3 * vec3(.1031, .1030, .0973)); p3 += dot(p3, p3.yxz + 33.33); return fract((p3.xxy + p3.yxx) * p3.zyx); }
+vec4 hash42(vec2 p) { vec4 p4 = fract(vec4(p.xyxy) * vec4(.1031, .1030, .0973, .1099)); p4 += dot(p4, p4.wzxy + 33.33); return fract((p4.xxyz + p4.yzzw) * p4.zywx); }
+
+float vnoise2(vec2 p) {
+  vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f);
+  float a = hash12(i), b = hash12(i + vec2(1., 0.)), c = hash12(i + vec2(0., 1.)), d = hash12(i + vec2(1., 1.));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float vnoise3(vec3 p) {
+  vec3 i = floor(p), f = fract(p); vec3 u = f * f * (3. - 2. * f);
+  float n000 = hash13(i), n100 = hash13(i + vec3(1., 0., 0.)), n010 = hash13(i + vec3(0., 1., 0.)), n110 = hash13(i + vec3(1., 1., 0.));
+  float n001 = hash13(i + vec3(0., 0., 1.)), n101 = hash13(i + vec3(1., 0., 1.)), n011 = hash13(i + vec3(0., 1., 1.)), n111 = hash13(i + vec3(1., 1., 1.));
+  return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y), mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+}
+float fbm2(vec2 p, int oct) {
+  float s = 0., a = .5, n = 0.;
+  for (int i = 0; i < 8; i++) { if (i >= oct) break; s += a * vnoise2(p); n += a; p = p * 2.03 + vec2(13.7, 7.1); a *= .5; }
+  return s / n;
+}
+float fbm3(vec3 p, int oct) {
+  float s = 0., a = .5, n = 0.;
+  for (int i = 0; i < 8; i++) { if (i >= oct) break; s += a * vnoise3(p); n += a; p = p * 2.03 + vec3(13.7, 7.1, 3.3); a *= .5; }
+  return s / n;
+}
+// F1-расстояние Ворлея, ~[0..1]
+float worley3(vec3 p) {
+  vec3 i = floor(p), f = fract(p); float d = 8.;
+  for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec3 o = vec3(float(x), float(y), float(z));
+    vec3 r = o + hash33(i + o) - f;
+    d = min(d, dot(r, r));
+  }
+  return sqrt(d);
+}
+`;
+
+const common = /* glsl */`
+precision highp sampler3D;
+vec3 aces(vec3 x) { return clamp((x * (2.51 * x + .03)) / (x * (2.43 * x + .59) + .14), 0., 1.); }
+vec3 toDisplay(vec3 c, float exposure) { return pow(aces(c * exposure), vec3(1. / 2.2)); }
+// Хеньи-Гринштейн, нормирована так, что изотропная = 1
+float hg(float c, float g) { float g2 = g * g; return (1. - g2) / pow(max(1. + g2 - 2. * g * c, 1e-4), 1.5); }
+// Оптическая толща дымки вдоль луча: коэффициент beta у земли, экспоненциальный спад с высотой
+float hazeTau(vec3 ro, vec3 rd, float dist, float beta) {
+  const float HS = 1.0;
+  float e0 = exp(-max(ro.y, 0.) / HS);
+  float k = rd.y / HS;
+  if (abs(k) < 1e-4) return beta * e0 * dist;
+  return beta * e0 * (1. - exp(-k * dist)) / k;
+}
+vec2 boxHit(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax) {
+  vec3 inv = 1. / rd;
+  vec3 t0 = (bmin - ro) * inv, t1 = (bmax - ro) * inv;
+  vec3 tmin = min(t0, t1), tmax = max(t0, t1);
+  return vec2(max(max(tmin.x, tmin.y), tmin.z), min(min(tmax.x, tmax.y), tmax.z));
+}
+// Плотность в мировой точке (км, y — вверх). Текстура: s = x, t = z, r = высота.
+float sampleVol(sampler3D vol, vec3 p, vec3 bmin, vec3 bmax) {
+  vec3 u = (p - bmin) / (bmax - bmin);
+  if (any(lessThan(u, vec3(0.))) || any(greaterThan(u, vec3(1.)))) return 0.;
+  return textureLod(vol, u.xzy, 0.).r;
+}
+`;
+
+// Атмосфера Земли: однократное рассеяние Рэлея и Ми (км). Используется для неба;
+// те же формулы на JS дают цвет солнца, окружающий свет и цвет дымки (main.js).
+const atmosphere = /* glsl */`
+const float RE = 6360., RA = 6420., HR = 8., HM = 1.2;
+const vec3 BR = vec3(5.8e-3, 13.5e-3, 33.1e-3);
+vec2 raySph(vec3 ro, vec3 rd, float r) {
+  float b = dot(ro, rd), c = dot(ro, ro) - r * r, d = b * b - c;
+  if (d < 0.) return vec2(-1.);
+  d = sqrt(d);
+  return vec2(-b - d, -b + d);
+}
+vec3 skyRadiance(float altKm, vec3 rd, vec3 sd, float betaM) {
+  vec3 ro = vec3(0., RE + max(altKm, .002), 0.);
+  float tEnd = raySph(ro, rd, RA).y;
+  vec2 tg = raySph(ro, rd, RE);
+  if (tg.x > 0.) tEnd = tg.x;
+  vec3 sR = vec3(0.), sM = vec3(0.);
+  float oR = 0., oM = 0.;
+  for (int i = 0; i < 16; i++) {
+    float x = (float(i) + .5) / 16.;                  // шаги сгущаются у камеры: t = tEnd·x²
+    float ds = tEnd * 2. * x / 16.;
+    vec3 p = ro + rd * tEnd * x * x;
+    float h = length(p) - RE;
+    float hr = exp(-h / HR) * ds, hm = exp(-h / HM) * ds;
+    oR += hr; oM += hm;
+    if (raySph(p, sd, RE).x > 0.) continue;          // точка в тени Земли
+    float dl = raySph(p, sd, RA).y / 6., lR = 0., lM = 0.;
+    for (int j = 0; j < 6; j++) {
+      float hl = length(p + sd * dl * (float(j) + .5)) - RE;
+      lR += exp(-hl / HR) * dl; lM += exp(-hl / HM) * dl;
+    }
+    vec3 att = exp(-(BR * (oR + lR) + betaM * 1.1 * (oM + lM)));
+    sR += att * hr; sM += att * hm;
+  }
+  float mu = dot(rd, sd);
+  float pR = .0597 * (1. + mu * mu);
+  float g = .76, g2 = g * g;
+  float pM = .1194 * (1. - g2) * (1. + mu * mu) / ((2. + g2) * pow(1. + g2 - 2. * g * mu, 1.5));
+  return sR * BR * pR + sM * betaM * pM;
+}
+`;
+
+export const fullscreenVert = /* glsl */`
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }
+`;
+
+export const worldVert = /* glsl */`
+varying vec3 vWorld;
+void main() {
+  vec4 w = modelMatrix * vec4(position, 1.);
+  vWorld = w.xyz;
+  gl_Position = projectionMatrix * viewMatrix * w;
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Генерация density volume: один проход = один горизонтальный срез (слой 3D-текстуры RG8).
+//   R — плотность 0..1 (0..255), G — "клубистость" края: 1 — кучевые клубы, 0 — волокна/рваные края.
+// Координаты в метрах: P.xy — горизонталь, P.z — высота.
+// Слой i упакован в 6 vec4:
+//   A = (base, minT, range, coverage 0..1)
+//   B = (kind, cell, -, density)
+//   C = (taper, dome, anvilStart, anvilSpread)
+//   D = (billowAmp, billowScale, rag, rows)
+//   E = (skew, smoothTop, flat, seed)
+//   F = (aspect, billowTop, billowBottom, deck | wave)
+// ---------------------------------------------------------------------------
+export const genFrag = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform float uZ;
+uniform float uL;
+uniform int uCount;
+uniform vec2 uWind;
+uniform vec4 uLA[4];
+uniform vec4 uLB[4];
+uniform vec4 uLC[4];
+uniform vec4 uLD[4];
+uniform vec4 uLE[4];
+uniform vec4 uLF[4];
+${noise}
+
+float smax(float a, float b, float k) { float h = max(k - abs(a - b), 0.) / k; return max(a, b) + h * h * k * .25; }
+float coverMask(float w, float cov) { return cov > .99 ? 1. : smoothstep(1. - cov - .12, 1. - cov + .12, w); }
+float wfield(vec2 q) { return clamp((fbm2(q, 5) - .5) * 2.4 + .5, 0., 1.); }
+
+// Радиус облака (в долях R) на относительной высоте h, <0 — вне облака
+float profileR(float h, vec4 C) {
+  if (h < 0. || h > 1.) return -1.;
+  float r = mix(1., C.x, h);
+  if (h > C.y) { float t = (h - C.y) / max(1. - C.y, 1e-3); r *= sqrt(max(0., 1. - t * t)); }
+  r *= sqrt(clamp(h / .03 + .7, 0., 1.));           // лёгкое скругление у плоского основания
+  if (C.w > 0. && h > C.z) {                        // наковальня: расширение к плоской вершине
+    float a = smoothstep(C.z, 1., h);
+    float anv = mix(1., C.w, pow(a, 1.3)) * sqrt(clamp((1. - h) / .04 + .3, 0., 1.));   // нижняя поверхность плавно поднимается
+    r = max(r, anv);
+  }
+  return r;
+}
+
+// F1-расстояние Ворлея в 2D, ~[0..1]
+float worley2(vec2 p) {
+  vec2 i = floor(p), f = fract(p); float d = 8.;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 o = vec2(float(x), float(y));
+    vec2 r = o + hash42(i + o).xy - f;
+    d = min(d, dot(r, r));
+  }
+  return sqrt(d);
+}
+
+vec2 cumulo(vec3 P, int li) {
+  vec4 A = uLA[li], B = uLB[li], C = uLC[li], D = uLD[li], E = uLE[li], F = uLF[li];
+  float base = A.x, cov = A.w, seed = E.w, aspect = F.x;
+  if (P.z < base - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
+  float G = B.y;
+  // органичная форма: координаты искажаются низкочастотным шумом — шары-пузыри становятся неправильными долями.
+  // У основания вертикально не искажаем, чтобы дно оставалось плоским.
+  vec3 wq = P / (D.y * 2.6) + seed * .9;
+  vec3 warp = (vec3(fbm3(wq, 2), fbm3(wq + 5.2, 2), fbm3(wq + 9.7, 2)) - .5) * 1.8 * D.y;
+  float zf = clamp((P.z - base) / (A.y * .5 + 1.), 0., 1.);
+  vec3 Pw = P + vec3(warp.xy, warp.z * zf);
+  float anvTop = C.w > 0. ? fbm2(P.xy / 4000. + seed * .3, 3) : 0.;     // волнистость верха наковальни
+  vec2 gi = floor(Pw.xy / G);
+  float best = -1e9, bestS = -1e9, bestH = 0., bestAnv = 0., bestBase = base, bestMam = 0.;
+  for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
+    vec2 c = gi + vec2(float(i), float(j));
+    vec4 r = hash42(c + seed);
+    vec2 ctr = (c + .1 + .8 * r.xy) * G;
+    float wm = vnoise2(ctr / (G * 3.5) + seed * .13);          // крупномасштабная кластеризация
+    float rows = 1.;
+    if (D.w > 0.) {                                             // гряды поперёк ветра
+      float s = .5 + .5 * sin(dot(ctr, uWind) / (G * 1.5) * 6.2831853);
+      rows = mix(1., s * 1.6, D.w);
+    }
+    if (r.z > cov * 1.25 * (.45 + 1.1 * wm) * rows) continue;   // ячейка пустая
+    // размер облака: много мелких, мало крупных; ширина следует из высоты и пропорций типа
+    float sz = pow(r.w, E.x);
+    float H = A.y + A.z * sz;
+    float R = min(H / (2. * aspect) * mix(.8, 1.25, hash12(c * 1.37 + seed + 5.1)), G * 1.1);
+    float dc = length(Pw.xy - ctr);
+    if (dc > R * (1.6 + C.w * 1.6)) continue;
+    if (C.w > 0.) {
+      // наковальня: плато чуть ниже верха слоя с волнистостью, над ядром — купол (overshooting top) до самого верха
+      float over = exp(-dc * dc / (R * R) * 4.);
+      H *= mix(.93 + .05 * (anvTop - .5), 1., over);
+    }
+    float bc0 = base + A.y * .07 * hash12(c * 3.1 + seed);     // свой уровень конденсации (только выше границы слоя)
+    float h = (Pw.z - bc0) / H;
+    if (h < -.02 || h > 1.) continue;
+    // тело: профиль вращения
+    vec2 cc = ctr;
+    if (C.w > 0.) cc += uWind * R * C.w * .4 * smoothstep(C.z, 1., h);   // снос наковальни ветром
+    float s = profileR(max(h, 0.), C) * R * (C.w > 0. && h > C.z ? .85 : .55) - length(Pw.xy - cc);   // >0 — внутри, метры
+    // пузыри-доли разного размера и формы, сглаженно объединённые с телом
+    float vs = min(1., 1.4 * H / R);                                       // сплюснутость для плоских облаков
+    vec3 rel = vec3(Pw.xy - ctr, Pw.z - bc0);
+    float hTop = C.w > 0. ? min(C.z + .1, .95) : .9;                      // у Cb пузыри — до основания наковальни
+    int nb = int(clamp(8. + 9. * aspect, 12., 20.));                       // башням — больше пузырей по высоте
+    for (int k = 0; k < 20; k++) {
+      if (k >= nb) break;
+      vec4 q = hash42(c * 1.91 + seed + float(k) * 7.31);
+      vec2 st = mix(vec2(.75), vec2(1.3), hash42(c * 2.71 + float(k) * 3.17).xy);   // эллипсоид, а не шар
+      float hk = k == 0 ? hTop * .95 : mix(.05, hTop, q.x);
+      float rk = R * mix(.25, .62, q.y * q.y) * mix(1., C.x, hk) * (aspect > .9 ? .8 : 1.);
+      float rz = rk * vs;
+      vec3 bc = vec3((q.zw - .5) * R * 1.3 * (1. - .5 * hk), min(max(hk * H, rz * .15), H - rz - D.x * .5));
+      vec3 dv = rel - bc; dv.z /= vs; dv.xy *= st;
+      s = smax(s, rk - length(dv), .18 * R);
+    }
+    float mam = 0.;
+    if (C.w > 0.) {
+      // mammatus: "мешки", свисающие под наковальней вне башни
+      float q0 = length(Pw.xy - ctr - uWind * R * C.w * .2) / (.85 * R);
+      if (q0 > 1.05) {
+        float aa = pow(clamp((q0 - 1.) / (C.w - 1.), 0., 1.), 1. / 1.3);
+        if (aa < .92) {
+          float x = .5 - sin(asin(1. - 2. * aa) / 3.);                    // обратная smoothstep
+          float zu = bc0 + (C.z + x * (1. - C.z)) * H;                    // высота нижней поверхности наковальни
+          float mw = worley2(Pw.xy / 1100. + seed);
+          float pouch = sqrt(max(0., 1. - mw * mw / .22));
+          float pd = 550. * pouch * smoothstep(1.1, 1.6, q0) * (1. - smoothstep(.55, .92, aa));
+          float sm = min(P.z - (zu - pd), zu + 120. - P.z);
+          if (sm > s) { s = sm; mam = 1.; }
+        }
+      }
+    }
+    // сглаженное пересечение с плоскостью основания: дно плоское, но без острого ребра
+    float kb = .15 * R * vs + 20.;
+    s = -smax(-s, -(P.z - bc0) * 1.5, kb);
+    best = smax(best, s, .25 * R);                                         // соседние облака сливаются в массивы
+    if (s > bestS) { bestS = s; bestH = max(h, 0.); bestBase = bc0; bestMam = mam; bestAnv = C.w > 0. ? smoothstep(C.z - .05, C.z + .1, h) * (1. - mam) : 0.; }
+  }
+  float amp = D.x;
+  vec2 res = vec2(0.);
+  float fb = fbm3(P / (D.y * 1.9) + seed * 1.7, 3);
+  if (best > -amp * 1.6) {
+    // клубы трёх масштабов: крупные доли, средние и мелкие "цветная капуста"
+    vec3 q = Pw / D.y + seed;
+    float bill = 1. - (.55 * worley3(q) + .3 * worley3(q * 2.17 + 11.3) + .15 * worley3(q * 4.63 + 3.1));
+    float ampH = amp * mix(.45, 1.15, clamp(bestH, 0., 1.));
+    ampH *= mix(1., .3, E.y * smoothstep(.55, 1., bestH));
+    float s = best + (bill - .45) * ampH + (fb - .5) * ampH * .9;
+    float d = smoothstep(0., .3 * amp + 30., s);
+    // основание: мягкий переход и лёгкая волнистость (только вверх — облако не опускается ниже слоя)
+    float bn = fbm2(P.xy / (amp * 5. + 200.) + seed * .7, 3) * (amp * .35 + 20.);
+    d *= smoothstep(0., .35 * amp + 40., P.z - bestBase - bn);
+    d *= B.w * (.7 + .3 * fb) * mix(1., .65, bestAnv);                    // наковальня реже и тоньше
+    if (bestAnv > 0.) {
+      // волокнистая текстура наковальни, вытянутая по ветру (видна сверху)
+      vec2 xy = vec2(dot(P.xy, uWind), dot(P.xy, vec2(-uWind.y, uWind.x)));
+      float stk = fbm3(vec3(xy.x / 3500., xy.y / 300., P.z / 250.) + seed, 4);
+      d *= mix(1., .45 + 1.1 * stk, bestAnv);
+    }
+    float bl = mix(F.z, F.y, smoothstep(.05, .5, bestH));                // рыхлый низ, клубящийся верх
+    bl = mix(mix(bl, .05, bestAnv), .85, bestMam);                        // наковальня — волокнистая, mammatus — гладкие мешки
+    res = vec2(d, bl);
+  }
+  // палуба под ячейками (Sc): сплошной бугристый слой при большом количестве
+  if (F.w > 0.) {
+    float m = coverMask(wfield(P.xy / (G * 2.5) + seed * .4), cov * .9);
+    float top = base + A.y * .55 * (.7 + .6 * fb);
+    float v = smoothstep(base, base + 50., P.z) * (1. - smoothstep(top - 80., top, P.z));
+    float dd = v * m * F.w * B.w * .85;
+    if (dd > res.x) res = vec2(dd, mix(F.z, F.y, .5));
+  }
+  return res;
+}
+
+vec2 sheet(vec3 P, int li) {
+  vec4 A = uLA[li], B = uLB[li], D = uLD[li], E = uLE[li], F = uLF[li];
+  float base = A.x, cov = A.w, seed = E.w;
+  float rag = D.z * A.y, wave = F.w * A.y;
+  if (P.z < base - rag - wave - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
+  vec2 q = P.xy / B.y + seed * .21;
+  float mask = coverMask(wfield(q), cov);
+  if (mask <= .001) return vec2(0.);
+  float tn = fbm2(q * 2.3 + 7.7, 4);
+  float thick = E.z > .5 ? A.y + A.z * (.45 + .1 * tn) : (A.y + A.z * tn) * mix(.35, 1., sqrt(mask));
+  float bot = base;
+  if (rag > 0.) bot += rag * clamp((fbm3(P / vec3(1200., 1200., 500.) + seed, 3) - .62) * 2., -1., 1.);
+  if (wave > 0.)                                     // волнистое основание (undulatus): гряды поперёк ветра
+    bot -= wave * (.5 + .5 * sin(dot(P.xy, uWind) / 1600. * 6.2831853 + 4. * fbm2(P.xy / 6000., 2)));
+  float top = base + thick;
+  float soft = max(35., .12 * thick);
+  float v = smoothstep(bot, bot + soft, P.z) * (1. - smoothstep(top - soft, top, P.z));
+  if (v <= 0.) return vec2(0.);
+  float det = fbm3(P / vec3(D.y * 2.5, D.y * 2.5, D.y) + seed * 1.3, 4);
+  float d = v * mask * B.w * (.45 + .55 * det) * smoothstep(.15, .5, mask * det * 1.6);
+  return vec2(d, F.y);
+}
+
+vec2 cirrus(vec3 P, int li) {
+  vec4 A = uLA[li], B = uLB[li], E = uLE[li];
+  float base = A.x, cov = A.w, seed = E.w;
+  if (P.z < base - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
+  vec2 xy = vec2(dot(P.xy, uWind), dot(P.xy, vec2(-uWind.y, uWind.x)));   // x — вдоль ветра
+  vec3 q = vec3(xy.x / 5000., xy.y / 600., (P.z - base) / 400.) + seed;
+  q.y += 1.4 * fbm3(q * vec3(.6, .25, .8) + 3.1, 3);
+  q.x += .5 * fbm3(q * vec3(1., .5, 1.) + 9.2, 2);
+  float n = fbm3(q, 5);
+  float mask = coverMask(wfield(P.xy / B.y + seed * .3), cov);
+  float thick = A.y + A.z * fbm2(P.xy / 6000. + 4.2, 3);
+  float hz = (P.z - base) / thick;
+  float v = smoothstep(0., .2, hz) * (1. - smoothstep(.65, 1., hz));
+  return vec2(smoothstep(.5, .7, n) * v * mask * B.w, 0.);
+}
+
+void main() {
+  vec3 P = vec3(vUv * uL, uZ);
+  // плавное затухание к краям области, чтобы облака не обрезались стенкой
+  vec2 e = min(P.xy, uL - P.xy);
+  float edge = smoothstep(0., 1500., min(e.x, e.y));
+  if (edge <= 0.) { gl_FragColor = vec4(0.); return; }
+  vec2 d = vec2(0.);
+  for (int li = 0; li < 4; li++) {
+    if (li >= uCount) break;
+    float k = uLB[li].x;
+    vec2 v = k < .5 ? cumulo(P, li) : (k < 1.5 ? sheet(P, li) : cirrus(P, li));
+    if (v.x > d.x) d = v;
+  }
+  gl_FragColor = vec4(clamp(d.x * edge, 0., 1.), d.y, 0., 1.);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Тайловая текстура детализации 128^3 (RG8), используется при рендере для эрозии краёв:
+//   R — billow: инвертированный fbm Ворлея (клубы), G — wispy: fbm value-noise (волокна, рваные края).
+// ---------------------------------------------------------------------------
+export const detailFrag = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform float uZ;
+${noise}
+float worleyP(vec3 p, float per) {
+  vec3 i = floor(p), f = fract(p); float d = 8.;
+  for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec3 o = vec3(float(x), float(y), float(z));
+    vec3 r = o + hash33(mod(i + o, per)) - f;
+    d = min(d, dot(r, r));
+  }
+  return sqrt(d);
+}
+float vnoiseP(vec3 p, float per) {
+  vec3 i = floor(p), f = fract(p); vec3 u = f * f * (3. - 2. * f);
+  float n000 = hash13(mod(i, per)), n100 = hash13(mod(i + vec3(1., 0., 0.), per));
+  float n010 = hash13(mod(i + vec3(0., 1., 0.), per)), n110 = hash13(mod(i + vec3(1., 1., 0.), per));
+  float n001 = hash13(mod(i + vec3(0., 0., 1.), per)), n101 = hash13(mod(i + vec3(1., 0., 1.), per));
+  float n011 = hash13(mod(i + vec3(0., 1., 1.), per)), n111 = hash13(mod(i + vec3(1., 1., 1.), per));
+  return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y), mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+}
+void main() {
+  vec3 p = vec3(vUv, uZ);
+  float w = .55 * worleyP(p * 4., 4.) + .3 * worleyP(p * 8., 8.) + .15 * worleyP(p * 16., 16.);
+  float f = (.5 * vnoiseP(p * 8., 8.) + .25 * vnoiseP(p * 16., 16.) + .125 * vnoiseP(p * 32., 32.) + .0625 * vnoiseP(p * 64., 64.)) / .9375;
+  gl_FragColor = vec4(clamp(1. - w * 1.15, 0., 1.), clamp((f - .5) * 1.8 + .5, 0., 1.), 0., 1.);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Raymarching облаков (мир в км). Рисуется задними гранями бокса объёма.
+// ---------------------------------------------------------------------------
+export const cloudFrag = /* glsl */`
+precision highp float;
+precision highp sampler3D;
+uniform sampler3D uVol;
+uniform sampler3D uDetail;
+uniform float uDetailScale, uErode;
+uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uAmbBottom, uHazeColor;
+uniform float uExt, uDensMul, uStepNear, uStepGrow, uLightStep, uHazeBeta, uExposure;
+uniform int uMaxSteps;
+varying vec3 vWorld;
+${common}
+
+float D(vec3 p) { return sampleVol(uVol, p, uBoxMin, uBoxMax); }
+vec2 D2(vec3 p) {
+  vec3 u = (p - uBoxMin) / (uBoxMax - uBoxMin);
+  if (any(lessThan(u, vec3(0.))) || any(greaterThan(u, vec3(1.)))) return vec2(0.);
+  return textureLod(uVol, u.xzy, 0.).rg;
+}
+// плотность с эрозией краёв детализирующим шумом (Schneider): клубы при bill=1, волокна при bill=0
+float erodeD(vec2 v, vec3 p, float t, float fade) {
+  vec3 dp = p / uDetailScale;
+  // завихрение координат низкочастотным шумом: турбулентные, а не "пузырчатые" края; сильнее у волокон
+  vec2 cn = textureLod(uDetail, dp * .21 + .13, 0.).rg - .5;
+  dp += vec3(cn.x, cn.y, cn.x - cn.y) * mix(1.1, .45, v.y);
+  vec2 n1 = textureLod(uDetail, dp, 0.).rg;
+  float e = mix(n1.g, 1. - n1.r, v.y);
+  float near = 1. - smoothstep(2., 9., t);
+  if (near > 0.) {
+    vec2 n2 = textureLod(uDetail, dp * 3.7 + .37, 0.).rg;
+    e = mix(e, e * .6 + mix(n2.g, 1. - n2.r, v.y) * .4, near);
+  }
+  float m = fade * e * .6;
+  return clamp((v.x - m) / max(1. - m, .05), 0., 1.);
+}
+// фазовая функция: узкий пик вперёд (серебристая кайма), основной лобус и обратное рассеяние
+float phase(float c, float s) { return .2 * hg(c, .88 * s) + .55 * hg(c, .45 * s) + .25 * hg(c, -.3 * s); }
+
+void main() {
+  vec3 ro = cameraPosition;
+  vec3 rd = normalize(vWorld - ro);
+  vec2 th = boxHit(ro, rd, uBoxMin, uBoxMax);
+  float t0 = max(th.x, 0.), t1 = th.y;
+  if (t1 <= t0) discard;
+
+  float cosT = dot(rd, uSunDir);
+  float awayFromSun = clamp(.5 - .5 * cosT, 0., 1.);
+  float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(.06711056, .00583715))));
+  float t = t0 + uStepNear * jit;
+  float T = 1.;
+  vec3 L = vec3(0.);
+  float dAcc = 0., wAcc = 0.;
+  bool empty = false;
+
+  for (int i = 0; i < 2048; i++) {
+    if (i >= uMaxSteps || t > t1 || T < .005) break;
+    float dt = uStepNear * (1. + t * uStepGrow);          // шаг растёт с расстоянием (LOD)
+    vec3 p = ro + rd * t;
+    vec2 v = D2(p);
+    float d = v.x;
+    if (d < .004) { t += dt * 1.6; empty = true; continue; }   // пропуск пустоты
+    if (empty) { empty = false; t -= dt * .8; continue; }       // вошли в облако — шаг назад, без проскока
+
+    // эрозия краёв: клубы сверху у кучевых, волокна снизу, у наковальни и перистых
+    float fade = uErode * mix(1., .35, smoothstep(6., 40., t));
+    if (fade > 0.) {
+      d = erodeD(v, p, t, fade);
+      if (d < .004) { t += dt; continue; }
+    }
+    d *= uDensMul;
+    float sigma = d * uExt;
+
+    // оптическая толща до солнца
+    float ld = 0., ls = uLightStep;
+    vec3 lp = p;
+    for (int j = 0; j < 6; j++) {
+      lp += uSunDir * ls * .5;
+      // ближние выборки — с эрозией: мелкие клубы отбрасывают тени друг на друга
+      ld += (j < 3 && fade > 0. ? erodeD(D2(lp), lp, t, fade) : D(lp)) * ls;
+      lp += uSunDir * ls * .5; ls *= 1.9;
+    }
+    ld *= uDensMul * uExt;
+
+    // приближение многократного рассеяния (октавы Вренннинге)
+    vec3 sun = vec3(0.);
+    float a = 1., b = 1., c = 1.;
+    for (int k = 0; k < 3; k++) {
+      sun += a * exp(-ld * b) * phase(cosT, c);
+      a *= .45; b *= .5; c *= .5;
+    }
+    // powder: края с малой плотностью рассеивают меньше — тёмные впадины между клубами
+    float powder = 1. - exp(-sigma * .25);
+    sun *= mix(1., powder, .8 * awayFromSun);
+    // окружающий свет неба, затенённый облаком сверху
+    float up = D(p + vec3(0., .2, 0.)) + 2. * D(p + vec3(0., .6, 0.));
+    float ao = exp(-up * uDensMul * uExt * .08);
+    // боковая затенённость: впадины между клубами и между "мешками" mammatus видят меньше неба у горизонта
+    float lat = D(p + vec3(.25, -.05, 0.)) + D(p + vec3(-.25, -.05, 0.)) + D(p + vec3(0., -.05, .25)) + D(p + vec3(0., -.05, -.25));
+    float open = exp(-lat * .25 * uDensMul * uExt * .04);
+    vec3 S = uSunColor * sun + mix(uAmbBottom, uAmbTop, ao) * mix(.6, 1., powder) * mix(.35, 1., open);
+
+    float Ts = exp(-sigma * dt);
+    float w = T * (1. - Ts);
+    L += S * w;
+    dAcc += w * t; wAcc += w;
+    T *= Ts;
+    t += dt;
+  }
+
+  float alpha = 1. - T;
+  if (alpha < .002) discard;
+  float dist = wAcc > 0. ? dAcc / wAcc : t0;
+  float fog = exp(-hazeTau(ro, rd, dist, uHazeBeta));     // метеовидимость (Кошмидер)
+  vec3 hc = uHazeColor + uSunColor * .025 * hg(cosT, .7);  // дымка ярче в сторону солнца
+  vec3 col = L * fog + hc * (1. - fog) * alpha;
+  gl_FragColor = vec4(toDisplay(col / alpha, uExposure) * alpha, alpha);
+}
+`;
+
+export const skyFrag = /* glsl */`
+precision highp float;
+uniform vec3 uSunDir, uSunColor, uHazeColor;
+uniform float uHazeBeta, uExposure, uBetaM, uSkySunI;
+varying vec3 vWorld;
+${common}
+${atmosphere}
+void main() {
+  vec3 rd = normalize(vWorld - cameraPosition);
+  vec3 c = skyRadiance(cameraPosition.y, rd, uSunDir, uBetaM) * uSkySunI;
+  c += uSunColor * smoothstep(.99985, .99995, dot(rd, uSunDir)) * 30.;   // солнечный диск
+  // плотный туман (видимость < ~10 км) поверх модели атмосферы
+  float hz = 1. - exp(-hazeTau(cameraPosition, rd, 300., uHazeBeta));
+  c = mix(c, uHazeColor, hz * smoothstep(.15, .6, uHazeBeta));
+  gl_FragColor = vec4(toDisplay(c, uExposure), 1.);
+}
+`;
+
+export const groundFrag = /* glsl */`
+precision highp float;
+precision highp sampler3D;
+uniform sampler3D uVol;
+uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uHazeColor;
+uniform float uExt, uDensMul, uHazeBeta, uExposure;
+varying vec3 vWorld;
+${noise}
+${common}
+float D(vec3 p) { return sampleVol(uVol, p, uBoxMin, uBoxMax); }
+void main() {
+  vec3 p = vec3(vWorld.x, 0., vWorld.z);
+  // ландшафт: вытянутые поля (~0.4×0.8 км), поделённые на полосы разных культур, рядки посевов,
+  // дороги и лесополосы по межам, массивы леса с кронами. Каждая мелкая деталь гаснет, когда становится
+  // меньше пикселя (fwidth) — вблизи есть текстура, вдали нет ряби.
+  vec2 q = p.xz;                                                        // км
+  vec2 g = mat2(.96, -.28, .28, .96) * q * vec2(2.6, 1.3) + vec2(vnoise2(q * .7), vnoise2(q * .7 + 9.)) * .5;
+  vec2 gc = floor(g), gf = fract(g);
+  float ns = 1. + floor(hash12(gc + 3.3) * 3.);                         // поле делится на 1–3 полосы
+  float sx = fract(gf.x * ns);
+  float ph = hash12(gc * 1.3 + floor(gf.x * ns) * 7.1);
+  vec3 field = ph < .25 ? vec3(.10, .16, .05) : ph < .5 ? vec3(.30, .27, .12) : ph < .7 ? vec3(.17, .21, .08) : ph < .88 ? vec3(.21, .15, .09) : vec3(.26, .29, .14);
+  field *= .9 + .2 * fbm2(q * 9. + ph * 50., 3);
+  float pt = fbm2(q * 28. + ph * 13., 4);                               // пятна 20–100 м: влажность, проплешины, выгоревшая трава
+  field *= .75 + .5 * pt;
+  field = mix(field, vec3(.24, .22, .11), smoothstep(.55, .75, fbm2(q * 45. + 7.3, 3)) * .5);
+  // рядки посевов (~10 м) вдоль длинной стороны, кроме лугов и пара
+  float rw = gf.x * 38.;
+  float rowsOn = (ph > .25 && ph < .88) ? 1. - smoothstep(.25, .6, fwidth(rw)) : 0.;
+  field *= mix(1., .8 + .4 * (.5 + .5 * sin(rw * 6.2831853)), rowsOn);
+  // мелкая текстура: ~15 м и ~2 м
+  vec2 m1 = q * 70., m2 = q * 500.;
+  field *= mix(1., .75 + .5 * fbm2(m1 + ph * 30., 3), 1. - smoothstep(.6, 2.5, min(abs(dFdx(m1.x)) + abs(dFdx(m1.y)), abs(dFdy(m1.x)) + abs(dFdy(m1.y)))));
+  field *= mix(1., .7 + .6 * vnoise2(m2), 1. - smoothstep(.6, 2.5, min(abs(dFdx(m2.x)) + abs(dFdx(m2.y)), abs(dFdy(m2.x)) + abs(dFdy(m2.y)))));
+  vec2 m3 = q * 3000.;                                                   // ~0.3 м: трава у самой камеры
+  field *= mix(1., .75 + .5 * vnoise2(m3), 1. - smoothstep(.6, 2.5, min(abs(dFdx(m3.x)) + abs(dFdx(m3.y)), abs(dFdy(m3.x)) + abs(dFdy(m3.y)))));
+  // межи: по краям поля — дорога, лесополоса или просто граница; между полосами — тонкая линия
+  float edgeKm = min(min(gf.x, 1. - gf.x) * .385, min(gf.y, 1. - gf.y) * .77);
+  float aaE = fwidth(edgeKm) * 1.5 + 1e-5;
+  float et = hash12(gc + 17.7);
+  float wE = et > .65 ? .005 : et > .35 ? .009 : .0025;
+  vec3 eCol = et > .65 ? vec3(.30, .29, .26) : et > .35 ? vec3(.045, .07, .035) : field * .7;
+  vec3 alb = mix(eCol, field, smoothstep(wE - aaE, wE + aaE, edgeKm));
+  float sKm = min(sx, 1. - sx) * .385 / ns;
+  float aaS = fwidth(sKm) * 1.5 + 1e-5;
+  alb *= mix(.8, 1., smoothstep(.0015 - aaS, .0015 + aaS, sKm));
+  alb = mix(alb, vec3(.18, .20, .09), smoothstep(.15, .9, length(fwidth(g))));   // вдали — средний цвет
+  // лес с кронами (~8 м)
+  float forest = smoothstep(.52, .6, fbm2(q * .28 + 3.7, 5));
+  if (forest > 0.) {
+    vec2 cr = q * 120.;
+    float crf = 1. - smoothstep(.3, 1., length(fwidth(cr)));
+    float crowns = crf > 0. ? mix(1., .55 + .8 * (1. - worley3(vec3(cr, .5))), crf) : 1.;
+    vec3 fcol = vec3(.045, .075, .035) * (.8 + .4 * fbm2(q * 6., 3)) * crowns;
+    alb = mix(alb, fcol, forest);
+  }
+
+  // тень от облаков: оптическая толща вдоль луча на солнце
+  float tau = 0.;
+  vec2 th = boxHit(p, uSunDir, uBoxMin, uBoxMax);
+  float a = max(th.x, 0.);
+  if (th.y > a && uSunDir.y > 0.) {
+    float dt = (th.y - a) / 24.;
+    for (int i = 0; i < 24; i++) tau += D(p + uSunDir * (a + (float(i) + .5) * dt)) * dt;
+  }
+  float sh = exp(-tau * uDensMul * uExt * .6);
+  // затемнение рассеянного света при сплошной облачности
+  float col = 0.;
+  if (abs(p.x) < uBoxMax.x && abs(p.z) < uBoxMax.z) {
+    float h = uBoxMax.y - uBoxMin.y;
+    for (int i = 0; i < 12; i++) col += D(vec3(p.x, uBoxMin.y + (float(i) + .5) / 12. * h, p.z));
+    col *= h / 12.;
+  }
+  float amb = mix(.3, 1., exp(-col * uDensMul * uExt * .05));
+  vec3 lit = alb * (uSunColor * max(uSunDir.y, 0.) * sh + uAmbTop * amb);
+  vec3 dv = vWorld - cameraPosition;
+  vec3 vd = normalize(dv);
+  float fog = exp(-hazeTau(cameraPosition, vd, length(dv), uHazeBeta));
+  vec3 hc = uHazeColor + uSunColor * .025 * hg(dot(vd, uSunDir), .7);
+  gl_FragColor = vec4(toDisplay(mix(hc, lit, fog), uExposure), 1.);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Метеорадар: отражаемость ~ интеграл d^2 по вертикали, полярные бины, палитра NWS.
+// ---------------------------------------------------------------------------
+export const radarFrag = /* glsl */`
+precision highp float;
+precision highp sampler3D;
+uniform sampler3D uVol;
+uniform float uSpanKm;
+varying vec2 vUv;
+
+vec3 dbzColor(float z) {
+  if (z < 10.) return vec3(.016, .914, .906);
+  if (z < 15.) return vec3(.004, .624, .957);
+  if (z < 20.) return vec3(.012, .0, .957);
+  if (z < 25.) return vec3(.008, .992, .008);
+  if (z < 30.) return vec3(.004, .773, .004);
+  if (z < 35.) return vec3(.0, .557, .0);
+  if (z < 40.) return vec3(.992, .973, .008);
+  if (z < 45.) return vec3(.898, .737, .0);
+  if (z < 50.) return vec3(.992, .584, .0);
+  if (z < 55.) return vec3(.992, .0, .0);
+  if (z < 60.) return vec3(.831, .0, .0);
+  if (z < 65.) return vec3(.737, .0, .0);
+  return vec3(.973, .0, .992);
+}
+
+void main() {
+  vec2 uv = vec2(vUv.x, 1. - vUv.y);          // верх миникарты — север (-z)
+  vec2 dd = uv - .5;
+  float a = atan(dd.y, dd.x), r = length(dd);
+  float da = 6.2831853 / 360., dr = 1. / 200.;
+  a = (floor(a / da) + .5) * da;
+  r = (floor(r / dr) + .5) * dr;
+  vec2 b = .5 + r * vec2(cos(a), sin(a));
+  vec3 bg = vec3(.02, .05, .04);
+  if (any(lessThan(b, vec2(0.))) || any(greaterThan(b, vec2(1.)))) { gl_FragColor = vec4(bg * .5, 1.); return; }
+  float acc = 0.;
+  for (int k = 0; k < 64; k++) { float v = textureLod(uVol, vec3(b, (float(k) + .5) / 64.), 0.).r; acc += v * v; }
+  float lwp = acc * uSpanKm / 64.;
+  float dbz = 10. + 35. * log(max(lwp, 1e-6) / .6) / log(10.);
+  vec3 col = dbz >= 5. ? dbzColor(dbz) : bg;
+  gl_FragColor = vec4(col, 1.);
+}
+`;
