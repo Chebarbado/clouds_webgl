@@ -126,7 +126,47 @@ export const CLOUD_TYPES = {
 
 export const KIND_ID = { cumulo: 0, sheet: 1, cirrus: 2 };
 
+// Короткие обозначения для подписей зон
+export const TYPE_ABBR = {
+  Altocumulus: 'Ac', Stratocumulus: 'Sc', CumulusHumilis: 'Cu hum', CumulusMediocris: 'Cu med',
+  CumulusCongestus: 'Cu con', CumulusTowering: 'TCu', CumulonimbusCalvus: 'Cb cal', CumulonimbusIncus: 'Cb inc',
+  AnvilHead: 'Anvil', Nimbostratus: 'Ns', Altostratus: 'As', Stratus: 'St', NimbostratusFlat: 'Ns fl', Cirrus: 'Ci',
+};
+
+// Пресет: одна зона (layers, domainKm) или сетка смежных зон (grid [nx, ny], tileKm, zones — слои каждой
+// зоны по строкам с севера на юг, blendKm — ширина плавного перехода между зонами).
 export const PRESETS = {
+  zonesFront: {
+    label: 'Зоны: Cu → Cb → Ns (холодный фронт, 3×1)', grid: [3, 1], tileKm: 32, blendKm: 16,
+    zones: [
+      [{ type: 'CumulusMediocris', oktas: 4 }, { type: 'Cirrus', oktas: 3 }],
+      [{ type: 'CumulonimbusIncus', base: 1000, oktas: 3 }],
+      [{ type: 'Nimbostratus', base: 800 }],
+    ],
+  },
+  zonesCover: {
+    label: 'Зоны: Sc 2/8 → 8/8 (покрытие, 2×1)', grid: [2, 1], tileKm: 32, blendKm: 24,
+    zones: [
+      [{ type: 'Stratocumulus', oktas: 2 }],
+      [{ type: 'Stratocumulus', oktas: 8 }],
+    ],
+  },
+  zonesHeight: {
+    label: 'Зоны: Cu humilis → Cu congestus (высоты, 2×1)', grid: [2, 1], tileKm: 32, blendKm: 24,
+    zones: [
+      [{ type: 'CumulusHumilis', oktas: 3 }],
+      [{ type: 'CumulusCongestus', oktas: 4 }],
+    ],
+  },
+  zonesQuad: {
+    label: 'Зоны: 2×2 — Cu / Sc / Ac+Ci / St+As', grid: [2, 2], tileKm: 32, blendKm: 14,
+    zones: [
+      [{ type: 'CumulusMediocris', oktas: 4 }],
+      [{ type: 'Stratocumulus', oktas: 6 }],
+      [{ type: 'Altocumulus', oktas: 5 }, { type: 'Cirrus', oktas: 4 }],
+      [{ type: 'Stratus', oktas: 7 }, { type: 'Altostratus', oktas: 6 }],
+    ],
+  },
   congestusCirrus: {
     label: 'Мощные кучевые + перистые', domainKm: 32,
     layers: [{ type: 'CumulusCongestus' }, { type: 'Cirrus' }],

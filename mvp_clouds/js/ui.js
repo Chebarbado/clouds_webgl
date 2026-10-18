@@ -32,6 +32,7 @@ export function buildUI(ctx) {
   const typeOptions = Object.entries(CLOUD_TYPES).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('');
 
   function settle() {
+    renderZones();
     if (ctx.enforceNonOverlap()) {
       warn.textContent = 'Слои не должны пересекаться по вертикали — нижняя граница поднята.';
       renderLayers();
@@ -55,7 +56,7 @@ export function buildUI(ctx) {
       const top = document.createElement('div');
       top.className = 'muted';
       const updTop = () => { top.textContent = `Верхняя граница до ${ctx.layerTop(l)} м`; };
-      const live = (key) => (v) => { l[key] = v; updTop(); ctx.onLayersChanged(); };
+      const live = (key) => (v) => { l[key] = v; updTop(); ctx.onLayersChanged(); renderZones(); };
       card.append(
         slider('Нижняя граница', 0, 12000, 50, l.base, m, live('base'), settle),
         slider('Мин. толщина', 50, 9000, 50, l.minT, m, live('minT'), settle),
@@ -99,10 +100,9 @@ export function buildUI(ctx) {
   const visToSlider = (v) => Math.log10(v);
   const atmEl = $('atmo');
   const visFmt = (s) => { const v = 10 ** s; return v < 1 ? `${(v * 1000).toFixed(0)} м` : `${v.toFixed(v < 10 ? 1 : 0)} км`; };
-  atmEl.append(
-    slider('Видимость (оптическая, МДВ)', -0.7, 2, 0.01, visToSlider(state.visibilityKm), visFmt,
-      (s) => { state.visibilityKm = 10 ** s; ctx.onAtmosphereChanged(); }),
-  );
+  const vis = slider('Видимость (оптическая, МДВ)', -0.7, 2, 0.01, visToSlider(state.visibilityKm), visFmt,
+    (s) => { state.visibilityKm = 10 ** s; ctx.onAtmosphereChanged(); });
+  atmEl.append(vis);
 
   // --- солнце
   const sunEl = $('sun');
@@ -121,7 +121,7 @@ export function buildUI(ctx) {
     s.addEventListener('change', () => { state[key] = +s.value; cb(); });
     return s;
   };
-  const domSel = bindSel('domain', 'domainKm', ctx.onVolumeChanged);
+  const domSel = bindSel('domain', 'tileKm', ctx.onVolumeChanged);
   bindSel('resH', 'resH', ctx.onVolumeChanged);
   bindSel('resV', 'resV', ctx.onVolumeChanged);
   const seedIn = $('seed');
@@ -132,6 +132,35 @@ export function buildUI(ctx) {
     seedIn.value = state.seed;
     ctx.onVolumeChanged();
   });
+
+  // --- зоны: смежные density volume с плавным переходом
+  const gridSel = $('grid');
+  gridSel.value = `${state.grid.nx}x${state.grid.ny}`;
+  gridSel.addEventListener('change', () => { const [nx, ny] = gridSel.value.split('x').map(Number); ctx.onGridChanged(nx, ny); });
+  const pick = $('zonePick');
+  function renderZones() {
+    const { nx, ny } = state.grid;
+    gridSel.value = `${nx}x${ny}`;
+    pick.style.gridTemplateColumns = `repeat(${nx}, 1fr)`;
+    pick.innerHTML = '';
+    for (let i = 0; i < nx * ny; i++) {
+      const b = document.createElement('button');
+      b.className = 'zone' + (i === state.sel ? ' sel' : '');
+      b.innerHTML = `<b>${String.fromCharCode(65 + (i % nx))}${Math.floor(i / nx) + 1}</b><span>${ctx.zoneLabel(i)}</span>`;
+      b.addEventListener('click', () => ctx.onZoneSelect(i));
+      pick.append(b);
+    }
+    $('zoneControls').style.display = nx * ny > 1 ? '' : 'none';
+    $('zoneTitle').textContent = nx * ny > 1 ? `— зона ${String.fromCharCode(65 + (state.sel % nx))}${Math.floor(state.sel / nx) + 1}` : '';
+  }
+  const blend = slider('Ширина перехода между зонами', 0, 30, 0.5, state.blendKm, (v) => `${v} км`,
+    (v) => { state.blendKm = v; }, () => ctx.onVolumeChanged());
+  $('zoneBlend').append(blend);
+  $('copyZone').addEventListener('click', ctx.onCopyZone);
+  $('exportZone').addEventListener('click', ctx.onExport);
+  const slabSel = $('slabs');
+  slabSel.value = state.slabMode;
+  slabSel.addEventListener('change', () => { state.slabMode = slabSel.value; ctx.onVolumeChanged(); });
 
   // --- рендер
   const renEl = $('render');
@@ -149,8 +178,12 @@ export function buildUI(ctx) {
   $('togglePanel').addEventListener('click', () => document.body.classList.toggle('panel-hidden'));
 
   return {
-    refresh() { domSel.value = String(state.domainKm); presetSel.value = ''; warn.textContent = ''; renderLayers(); },
+    refresh() {
+      domSel.value = String(state.tileKm); presetSel.value = ''; warn.textContent = '';
+      blend.set(state.blendKm); renderLayers(); renderZones();
+    },
     syncSun() { az.set(state.sunAz); },
+    syncVisibility() { vis.set(visToSlider(state.visibilityKm)); },
     updateInfo(html) { $('info').innerHTML = html; },
     setHud(text) { $('hud').textContent = text; },
   };

@@ -14,6 +14,7 @@
   <button id="togglePanel" title="Скрыть/показать панель">☰</button>
   <aside id="panel">
     <h1>Volumetric Clouds</h1>
+    <a class="muted" href="meteo.html" style="color:#5fb4ff">Метеомодель облакообразования →</a>
 
     <section>
       <h2>Пресет</h2>
@@ -21,7 +22,27 @@
     </section>
 
     <section>
-      <h2>Слои облачности</h2>
+      <h2>Зоны (смежные density volume)</h2>
+      <label>Сетка зон<select id="grid">
+        <option value="1x1">1 × 1 (одна зона)</option><option value="2x1">2 × 1</option><option value="1x2">1 × 2</option>
+        <option value="2x2">2 × 2</option><option value="3x1">3 × 1</option><option value="3x3">3 × 3</option>
+      </select></label>
+      <div id="zoneControls">
+        <div id="zonePick"></div>
+        <div id="zoneBlend"></div>
+        <div class="btns2">
+          <button id="copyZone" title="Скопировать слои выбранной зоны во все остальные">Слои → во все зоны</button>
+          <button id="exportZone" title="Скачать density volume выбранной зоны (uint8)">Скачать volume зоны</button>
+        </div>
+        <div class="muted">Зона выбирается кнопкой выше или Shift+клик по радару. Покрытие, высоты и толщина плавно перетекают между зонами.</div>
+      </div>
+      <label>Вертикальные ярусы<select id="slabs">
+        <option value="auto">Авто: нижний + верхний</option><option value="one">Один объём</option>
+      </select></label>
+    </section>
+
+    <section>
+      <h2>Слои облачности <span id="zoneTitle"></span></h2>
       <div id="layers"></div>
       <button id="addLayer">+ Добавить слой</button>
       <div id="layerWarn" class="warn"></div>
@@ -56,7 +77,7 @@
     <section>
       <h2>Density volume</h2>
       <div class="grid2">
-        <label>Область<select id="domain">
+        <label>Размер зоны<select id="domain">
           <option value="16">16 км</option><option value="24">24 км</option><option value="32">32 км</option>
           <option value="48">48 км</option><option value="64">64 км</option>
         </select></label>

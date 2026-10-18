@@ -59,12 +59,6 @@ vec2 boxHit(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax) {
   vec3 tmin = min(t0, t1), tmax = max(t0, t1);
   return vec2(max(max(tmin.x, tmin.y), tmin.z), min(min(tmax.x, tmax.y), tmax.z));
 }
-// Плотность в мировой точке (км, y — вверх). Текстура: s = x, t = z, r = высота.
-float sampleVol(sampler3D vol, vec3 p, vec3 bmin, vec3 bmax) {
-  vec3 u = (p - bmin) / (bmax - bmin);
-  if (any(lessThan(u, vec3(0.))) || any(greaterThan(u, vec3(1.)))) return 0.;
-  return textureLod(vol, u.xzy, 0.).r;
-}
 `;
 
 // Атмосфера Земли: однократное рассеяние Рэлея и Ми (км). Используется для неба;
@@ -109,6 +103,23 @@ vec3 skyRadiance(float altKm, vec3 rd, vec3 sd, float betaM) {
 }
 `;
 
+// Доступ к density volume в мировой точке (км, y — вверх).
+// Мир по горизонтали — атлас смежных зон (s = x, t = z); по вертикали — один или два яруса
+// (uVol — нижний, uVolHi — верхний) со своим вертикальным разрешением; граница ярусов uSplitY.
+const volume = /* glsl */`
+uniform sampler3D uVol;
+uniform sampler3D uVolHi;
+uniform float uSplitY;
+uniform vec2 uLoY, uHiY;
+vec2 volRG(vec3 p) {
+  if (any(lessThan(p, uBoxMin)) || any(greaterThan(p, uBoxMax))) return vec2(0.);
+  vec2 xz = (p.xz - uBoxMin.xz) / (uBoxMax.xz - uBoxMin.xz);
+  if (p.y < uSplitY) return textureLod(uVol, vec3(xz, (p.y - uLoY.x) / (uLoY.y - uLoY.x)), 0.).rg;
+  return textureLod(uVolHi, vec3(xz, (p.y - uHiY.x) / (uHiY.y - uHiY.x)), 0.).rg;
+}
+float volD(vec3 p) { return volRG(p).r; }
+`;
+
 export const fullscreenVert = /* glsl */`
 varying vec2 vUv;
 void main() { vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }
@@ -127,8 +138,12 @@ void main() {
 // Генерация density volume: один проход = один горизонтальный срез (слой 3D-текстуры RG8).
 //   R — плотность 0..1 (0..255), G — "клубистость" края: 1 — кучевые клубы, 0 — волокна/рваные края.
 // Координаты в метрах: P.xy — горизонталь, P.z — высота.
-// Слой i упакован в 6 vec4:
-//   A = (base, minT, range, coverage 0..1)
+// Мир — сетка смежных зон (до 3×3), у каждой свои слои. Одинаковые слои (тип + номер среди слоёв этого типа)
+// всех зон образуют одну "группу" — общую популяцию облаков с общей сеткой ячеек и seed. Для группы g и зоны z
+// в uGA[g*9+z] хранятся высоты и покрытие (у зоны без такого слоя покрытие 0, высоты — от ближайшего
+// подходящего слоя этой зоны). Параметры в точке — билинейная смесь соседних зон с гладким переходом
+// шириной uBlend вокруг границ: покрытие, высоты и толщина перетекают непрерывно, шва нет по построению.
+// Параметры типа группы g упакованы в 5 vec4:
 //   B = (kind, cell, -, density)
 //   C = (taper, dome, anvilStart, anvilSpread)
 //   D = (billowAmp, billowScale, rag, rows)
@@ -139,16 +154,35 @@ export const genFrag = /* glsl */`
 precision highp float;
 varying vec2 vUv;
 uniform float uZ;
-uniform float uL;
-uniform int uCount;
+uniform vec2 uOrigin, uSize;      // область прохода (зона) в метрах мира
+uniform vec2 uWorld;              // размер мира, м
+uniform vec2 uGrid;               // число зон (nx, ny)
+uniform float uTile, uBlend;      // размер зоны и ширина перехода, м
+uniform int uNG;                  // число групп
 uniform vec2 uWind;
-uniform vec4 uLA[4];
-uniform vec4 uLB[4];
-uniform vec4 uLC[4];
-uniform vec4 uLD[4];
-uniform vec4 uLE[4];
-uniform vec4 uLF[4];
+uniform vec4 uGA[72];
+uniform vec4 uGB[8];
+uniform vec4 uGC[8];
+uniform vec4 uGD[8];
+uniform vec4 uGE[8];
+uniform vec4 uGF[8];
+uniform vec4 uGZ[8];              // (zmin, zmax) группы по всем зонам — для быстрого отсечения
 ${noise}
+
+// Высоты и покрытие группы g в горизонтальной точке xy: билинейная смесь 2×2 ближайших зон,
+// переход шириной uBlend вокруг каждой границы зон (гладкий, smoothstep)
+vec4 blendA(int g, vec2 xy) {
+  vec2 t = xy / uTile - .5;
+  vec2 b = clamp(floor(t), vec2(0.), max(uGrid - 2., vec2(0.)));
+  vec2 s = smoothstep(0., 1., clamp((t - b - .5) * uTile / uBlend + .5, 0., 1.));
+  if (uGrid.x < 1.5) s.x = 0.;
+  if (uGrid.y < 1.5) s.y = 0.;
+  ivec2 i0 = ivec2(b), i1 = ivec2(min(b + 1., uGrid - 1.));
+  int nx = int(uGrid.x), o = g * 9;
+  vec4 a00 = uGA[o + i0.y * nx + i0.x], a10 = uGA[o + i0.y * nx + i1.x];
+  vec4 a01 = uGA[o + i1.y * nx + i0.x], a11 = uGA[o + i1.y * nx + i1.x];
+  return mix(mix(a00, a10, s.x), mix(a01, a11, s.x), s.y);
+}
 
 float smax(float a, float b, float k) { float h = max(k - abs(a - b), 0.) / k; return max(a, b) + h * h * k * .25; }
 float coverMask(float w, float cov) { return cov > .99 ? 1. : smoothstep(1. - cov - .12, 1. - cov + .12, w); }
@@ -180,9 +214,9 @@ float worley2(vec2 p) {
 }
 
 vec2 cumulo(vec3 P, int li) {
-  vec4 A = uLA[li], B = uLB[li], C = uLC[li], D = uLD[li], E = uLE[li], F = uLF[li];
+  vec4 B = uGB[li], C = uGC[li], D = uGD[li], E = uGE[li], F = uGF[li];
+  vec4 A = blendA(li, P.xy);
   float base = A.x, cov = A.w, seed = E.w, aspect = F.x;
-  if (P.z < base - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
   float G = B.y;
   // органичная форма: координаты искажаются низкочастотным шумом — шары-пузыри становятся неправильными долями.
   // У основания вертикально не искажаем, чтобы дно оставалось плоским.
@@ -203,10 +237,12 @@ vec2 cumulo(vec3 P, int li) {
       float s = .5 + .5 * sin(dot(ctr, uWind) / (G * 1.5) * 6.2831853);
       rows = mix(1., s * 1.6, D.w);
     }
-    if (r.z > cov * 1.25 * (.45 + 1.1 * wm) * rows) continue;   // ячейка пустая
+    // параметры зон — в центре ячейки: в зоне перехода облако целиком есть или нет, а не режется
+    vec4 Ac = blendA(li, ctr);
+    if (r.z > Ac.w * 1.25 * (.45 + 1.1 * wm) * rows) continue;  // ячейка пустая
     // размер облака: много мелких, мало крупных; ширина следует из высоты и пропорций типа
     float sz = pow(r.w, E.x);
-    float H = A.y + A.z * sz;
+    float H = Ac.y + Ac.z * sz;
     float R = min(H / (2. * aspect) * mix(.8, 1.25, hash12(c * 1.37 + seed + 5.1)), G * 1.1);
     float dc = length(Pw.xy - ctr);
     if (dc > R * (1.6 + C.w * 1.6)) continue;
@@ -215,7 +251,7 @@ vec2 cumulo(vec3 P, int li) {
       float over = exp(-dc * dc / (R * R) * 4.);
       H *= mix(.93 + .05 * (anvTop - .5), 1., over);
     }
-    float bc0 = base + A.y * .07 * hash12(c * 3.1 + seed);     // свой уровень конденсации (только выше границы слоя)
+    float bc0 = Ac.x + Ac.y * .07 * hash12(c * 3.1 + seed);   // свой уровень конденсации (только выше границы слоя)
     float h = (Pw.z - bc0) / H;
     if (h < -.02 || h > 1.) continue;
     // тело: профиль вращения
@@ -298,7 +334,8 @@ vec2 cumulo(vec3 P, int li) {
 }
 
 vec2 sheet(vec3 P, int li) {
-  vec4 A = uLA[li], B = uLB[li], D = uLD[li], E = uLE[li], F = uLF[li];
+  vec4 B = uGB[li], D = uGD[li], E = uGE[li], F = uGF[li];
+  vec4 A = blendA(li, P.xy);
   float base = A.x, cov = A.w, seed = E.w;
   float rag = D.z * A.y, wave = F.w * A.y;
   if (P.z < base - rag - wave - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
@@ -321,7 +358,8 @@ vec2 sheet(vec3 P, int li) {
 }
 
 vec2 cirrus(vec3 P, int li) {
-  vec4 A = uLA[li], B = uLB[li], E = uLE[li];
+  vec4 B = uGB[li], E = uGE[li];
+  vec4 A = blendA(li, P.xy);
   float base = A.x, cov = A.w, seed = E.w;
   if (P.z < base - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
   vec2 xy = vec2(dot(P.xy, uWind), dot(P.xy, vec2(-uWind.y, uWind.x)));   // x — вдоль ветра
@@ -337,15 +375,16 @@ vec2 cirrus(vec3 P, int li) {
 }
 
 void main() {
-  vec3 P = vec3(vUv * uL, uZ);
-  // плавное затухание к краям области, чтобы облака не обрезались стенкой
-  vec2 e = min(P.xy, uL - P.xy);
+  vec3 P = vec3(uOrigin + vUv * uSize, uZ);
+  // плавное затухание к внешним краям мира, чтобы облака не обрезались стенкой
+  vec2 e = min(P.xy, uWorld - P.xy);
   float edge = smoothstep(0., 1500., min(e.x, e.y));
   if (edge <= 0.) { gl_FragColor = vec4(0.); return; }
   vec2 d = vec2(0.);
-  for (int li = 0; li < 4; li++) {
-    if (li >= uCount) break;
-    float k = uLB[li].x;
+  for (int li = 0; li < 8; li++) {
+    if (li >= uNG) break;
+    if (P.z < uGZ[li].x - 1. || P.z > uGZ[li].y + 1.) continue;
+    float k = uGB[li].x;
     vec2 v = k < .5 ? cumulo(P, li) : (k < 1.5 ? sheet(P, li) : cirrus(P, li));
     if (v.x > d.x) d = v;
   }
@@ -393,7 +432,6 @@ void main() {
 export const cloudFrag = /* glsl */`
 precision highp float;
 precision highp sampler3D;
-uniform sampler3D uVol;
 uniform sampler3D uDetail;
 uniform float uDetailScale, uErode;
 uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uAmbBottom, uHazeColor;
@@ -401,13 +439,10 @@ uniform float uExt, uDensMul, uStepNear, uStepGrow, uLightStep, uHazeBeta, uExpo
 uniform int uMaxSteps;
 varying vec3 vWorld;
 ${common}
+${volume}
 
-float D(vec3 p) { return sampleVol(uVol, p, uBoxMin, uBoxMax); }
-vec2 D2(vec3 p) {
-  vec3 u = (p - uBoxMin) / (uBoxMax - uBoxMin);
-  if (any(lessThan(u, vec3(0.))) || any(greaterThan(u, vec3(1.)))) return vec2(0.);
-  return textureLod(uVol, u.xzy, 0.).rg;
-}
+float D(vec3 p) { return volD(p); }
+vec2 D2(vec3 p) { return volRG(p); }
 // плотность с эрозией краёв детализирующим шумом (Schneider): клубы при bill=1, волокна при bill=0
 float erodeD(vec2 v, vec3 p, float t, float fade) {
   vec3 dp = p / uDetailScale;
@@ -529,13 +564,13 @@ void main() {
 export const groundFrag = /* glsl */`
 precision highp float;
 precision highp sampler3D;
-uniform sampler3D uVol;
 uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uHazeColor;
 uniform float uExt, uDensMul, uHazeBeta, uExposure;
 varying vec3 vWorld;
 ${noise}
 ${common}
-float D(vec3 p) { return sampleVol(uVol, p, uBoxMin, uBoxMax); }
+${volume}
+float D(vec3 p) { return volD(p); }
 void main() {
   vec3 p = vec3(vWorld.x, 0., vWorld.z);
   // ландшафт: вытянутые поля (~0.4×0.8 км), поделённые на полосы разных культур, рядки посевов,
@@ -615,9 +650,10 @@ void main() {
 export const radarFrag = /* glsl */`
 precision highp float;
 precision highp sampler3D;
-uniform sampler3D uVol;
-uniform float uSpanKm;
+uniform vec3 uBoxMin, uBoxMax;
+uniform vec4 uView;      // область миникарты: (xmin, zmin, сторона), км
 varying vec2 vUv;
+${volume}
 
 vec3 dbzColor(float z) {
   if (z < 10.) return vec3(.016, .914, .906);
@@ -644,12 +680,25 @@ void main() {
   r = (floor(r / dr) + .5) * dr;
   vec2 b = .5 + r * vec2(cos(a), sin(a));
   vec3 bg = vec3(.02, .05, .04);
-  if (any(lessThan(b, vec2(0.))) || any(greaterThan(b, vec2(1.)))) { gl_FragColor = vec4(bg * .5, 1.); return; }
+  vec2 xz = uView.xy + b * uView.z;
+  if (any(lessThan(xz, uBoxMin.xz)) || any(greaterThan(xz, uBoxMax.xz))) { gl_FragColor = vec4(bg * .5, 1.); return; }
   float acc = 0.;
-  for (int k = 0; k < 64; k++) { float v = textureLod(uVol, vec3(b, (float(k) + .5) / 64.), 0.).r; acc += v * v; }
-  float lwp = acc * uSpanKm / 64.;
+  float span = uBoxMax.y - uBoxMin.y;
+  for (int k = 0; k < 96; k++) { float v = volD(vec3(xz.x, uBoxMin.y + (float(k) + .5) / 96. * span, xz.y)); acc += v * v; }
+  float lwp = acc * span / 96.;
   float dbz = 10. + 35. * log(max(lwp, 1e-6) / .6) / log(10.);
   vec3 col = dbz >= 5. ? dbzColor(dbz) : bg;
   gl_FragColor = vec4(col, 1.);
 }
+`;
+
+// Копия одного среза зоны из атласа (для экспорта density volume зоны в файл)
+export const copySliceFrag = /* glsl */`
+precision highp float;
+precision highp sampler3D;
+uniform sampler3D uSrc;
+uniform vec4 uRegion;    // (u0, v0, du, dv) — область зоны в атласе
+uniform float uR;        // координата среза
+varying vec2 vUv;
+void main() { gl_FragColor = vec4(textureLod(uSrc, vec3(uRegion.xy + vUv * uRegion.zw, uR), 0.).r, 0., 0., 1.); }
 `;
