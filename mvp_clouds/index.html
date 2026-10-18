@@ -52,6 +52,15 @@
     </section>
 
     <section>
+      <h2>Ландшафт</h2>
+      <label>Место<select id="terrain"></select></label>
+      <label>Снимок поверхности<select id="imagery"></select></label>
+      <label class="check"><input type="checkbox" id="raiseClouds" checked> Поднимать облака над рельефом при загрузке</label>
+      <div id="terrStatus" class="muted"></div>
+      <div class="muted">Высоты слоёв — над уровнем моря. Данные: AWS Terrain Tiles, Sentinel-2 / Esri, здания — OpenStreetMap.</div>
+    </section>
+
+    <section>
       <h2>Динамика</h2>
       <label class="check"><input type="checkbox" id="windOn"> Ветер — перенос облаков</label>
       <div id="windCtl"></div>
@@ -116,6 +125,7 @@
   </aside>
 
   <div id="hud"></div>
+  <div id="attrib"></div>
   <div id="radar">
     <button id="radarTitle" title="Свернуть / развернуть радар">Метеорадар · dBZ</button>
     <canvas id="radarOverlay"></canvas>

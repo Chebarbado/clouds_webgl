@@ -96,6 +96,17 @@ export function buildUI(ctx) {
     renderLayers();
   });
 
+  // --- ландшафт
+  const terrSel = $('terrain'), imgSel = $('imagery');
+  terrSel.innerHTML = '<option value="">Процедурная равнина</option>' +
+    Object.entries(ctx.LOCATIONS).map(([k, l]) => `<option value="${k}">${l.label}</option>`).join('');
+  imgSel.innerHTML = Object.entries(ctx.IMAGERY).map(([k, l]) => `<option value="${k}">${l.label}</option>`).join('');
+  terrSel.value = state.terrain; imgSel.value = state.imagery;
+  $('raiseClouds').checked = state.raiseClouds;
+  terrSel.addEventListener('change', () => { state.terrain = terrSel.value; ctx.onTerrainChanged(); });
+  imgSel.addEventListener('change', () => { state.imagery = imgSel.value; if (state.terrain) ctx.onTerrainChanged(); });
+  $('raiseClouds').addEventListener('change', (e) => { state.raiseClouds = e.target.checked; });
+
   // --- динамика: ветер и развитие облаков
   const compass = (d) => ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'][Math.round(d / 45) % 8];
   const windOn = $('windOn'), devOn = $('devOn');
@@ -220,7 +231,9 @@ export function buildUI(ctx) {
       vis.set(visToSlider(state.visibilityKm));
       rDens.set(state.densMul); rExt.set(state.ext); rEro.set(state.erode); rExp.set(state.exposure);
       syncDynamics();
+      terrSel.value = state.terrain; imgSel.value = state.imagery;
     },
+    setTerrainStatus(t) { $('terrStatus').textContent = t; },
     showShare(url, copied) {
       shareOut.value = url;
       shareOut.parentElement.style.display = '';

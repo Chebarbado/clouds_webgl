@@ -5,6 +5,7 @@ import * as S from './shaders.js';
 import { buildUI } from './ui.js';
 import { sunTransmittance, skyAverage, skyRadiance, mieFromVisibility } from './atmosphere.js';
 import { packState, unpackState, encode, decode, hashCode } from './share.js';
+import { LOCATIONS, IMAGERY, loadTerrain } from './terrain.js';
 
 // ---------------------------------------------------------------------------
 // Состояние
@@ -33,6 +34,7 @@ const state = {
   sunAz: 280, sunEl: 35, animateSun: false,
   visibilityKm: 100, densMul: 1, ext: 45, exposure: 1.1, erode: 1.0,
   quality: MOBILE ? 'low' : 'medium', showBox: false,
+  terrain: '', imagery: 's2', raiseClouds: true,   // ландшафт: '' — процедурная земля
 };
 // слои выбранной зоны — их редактирует панель
 Object.defineProperty(state, 'layers', {
@@ -123,7 +125,7 @@ scene.add(sky);
 
 // Земля
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(1500, 1500), new THREE.ShaderMaterial({
-  vertexShader: S.worldVert, fragmentShader: S.groundFrag, uniforms: { ...shared },
+  vertexShader: S.worldVert, fragmentShader: S.groundFrag, uniforms: { ...shared, uHole: { value: new THREE.Vector4(1, 1, -1, -1) } },
 }));
 ground.rotation.x = -Math.PI / 2;
 ground.renderOrder = 1;
@@ -139,12 +141,27 @@ const cloudMat = new THREE.ShaderMaterial({
     uDetail: { value: null }, uDetailScale: { value: 0.6 }, uErode: { value: state.erode },
     uDetailShift: { value: new THREE.Vector2() }, uBoil: { value: 0 },
     uStepNear: { value: 0.05 }, uStepGrow: { value: 0.04 }, uLightStep: { value: 0.05 }, uMaxSteps: { value: 400 }, uLite: { value: 0 },
+    uDepth: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uNear: { value: 0.001 }, uFar: { value: 2000 },
+    uCamFwd: { value: new THREE.Vector3() },
   },
 });
 const cloudBox = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), cloudMat);
 cloudBox.renderOrder = 2;
 cloudBox.frustumCulled = false;
-scene.add(cloudBox);
+const cloudScene = new THREE.Scene();
+cloudScene.add(cloudBox);
+
+// Непрозрачная сцена (небо, земля, рельеф, здания) рендерится в буфер с глубиной: облака по ней
+// обрываются на первой поверхности — гора или здание перед облаком закрывает его
+const opaqueRT = new THREE.WebGLRenderTarget(1, 1);
+opaqueRT.depthTexture = new THREE.DepthTexture(1, 1);
+opaqueRT.depthTexture.type = THREE.UnsignedIntType;
+cloudMat.uniforms.uDepth.value = opaqueRT.depthTexture;
+function resizeTargets() {
+  const v = renderer.getDrawingBufferSize(new THREE.Vector2());
+  opaqueRT.setSize(v.x, v.y);
+  cloudMat.uniforms.uRes.value.copy(v);
+}
 
 const boxHelper = new THREE.Box3Helper(new THREE.Box3(box.min, box.max), 0xffcc44);
 boxHelper.renderOrder = 3;
@@ -178,6 +195,8 @@ function fsScene(fragmentShader, uniforms) {
   sc.add(mesh);
   return { scene: sc, mat };
 }
+
+const blit = fsScene(S.blitFrag, { uTex: { value: opaqueRT.texture } });
 
 // Текстура детализации — один раз
 {
@@ -671,7 +690,81 @@ function applyQuality() {
   cloudMat.uniforms.uStepNear.value = q.stepNear;
   cloudMat.uniforms.uMaxSteps.value = q.maxSteps;
   cloudMat.uniforms.uLite.value = q.lite;
+  resizeTargets();
 }
+
+// ---------------------------------------------------------------------------
+// Ландшафт (terrain.js): рельеф + снимок из открытых данных, для Лондона — здания OSM
+// ---------------------------------------------------------------------------
+const terr = { data: null, mesh: null, bld: null, token: 0 };
+const attribEl = document.getElementById('attrib');
+const surfUniforms = () => ({ ...shared });
+
+function clearTerrain() {
+  for (const m of [terr.mesh, terr.bld]) {
+    if (!m) continue;
+    scene.remove(m);
+    m.geometry.dispose();
+    m.material.uniforms.uImage?.value.dispose();
+    m.material.dispose();
+  }
+  terr.data = terr.mesh = terr.bld = null;
+  ground.position.y = 0;
+  ground.material.uniforms.uHole.value.set(1, 1, -1, -1);
+  attribEl.textContent = '';
+}
+
+async function applyTerrain() {
+  const token = ++terr.token;
+  const key = state.terrain;
+  if (!key) { clearTerrain(); ui.setTerrainStatus(''); return; }
+  try {
+    const d = await loadTerrain(key, state.imagery, { mobile: MOBILE, onStatus: (t) => token === terr.token && ui.setTerrainStatus(t) });
+    if (token !== terr.token) { d.geo.dispose(); d.tex.dispose(); d.buildings?.geo.dispose(); return; }
+    clearTerrain();
+    terr.data = d;
+    terr.mesh = new THREE.Mesh(d.geo, new THREE.ShaderMaterial({
+      vertexShader: S.surfaceVert, fragmentShader: S.terrainFrag,
+      uniforms: { ...surfUniforms(), uImage: { value: d.tex }, uWater: { value: d.loc.water } },
+    }));
+    terr.mesh.renderOrder = 1;
+    scene.add(terr.mesh);
+    if (d.buildings) {
+      terr.bld = new THREE.Mesh(d.buildings.geo, new THREE.ShaderMaterial({
+        vertexShader: S.surfaceVert, fragmentShader: S.buildingFrag, uniforms: surfUniforms(),
+        vertexColors: true, side: THREE.DoubleSide,
+      }));
+      terr.bld.renderOrder = 1;
+      scene.add(terr.bld);
+    }
+    ground.position.y = d.stats.edge - 0.003;     // за краями рельефа — обычная земля на уровне его краёв
+    const hs = d.size / 2 - 0.05;                 // отверстие чуть меньше квадрата: края рельефа и земля стыкуются
+    ground.material.uniforms.uHole.value.set(-hs, -hs, hs, hs);
+    attribEl.textContent = d.attribution;
+    // высоты облаков — над уровнем моря: при желании поднимаем слои над типичным рельефом
+    let msg = `Рельеф ${Math.round(d.stats.min * 1000)}–${Math.round(d.stats.max * 1000)} м` +
+      (d.buildings ? `, зданий ${d.buildings.count}` : '');
+    if (state.raiseClouds) {
+      const bases = state.zones.flatMap((z) => z.layers.filter((l) => l.enabled).map((l) => l.base));
+      const need = Math.ceil(((d.stats.median + 0.3) * 1000 - Math.min(...bases)) / 50) * 50;
+      if (bases.length && need > 0) {
+        state.zones.forEach((z) => z.layers.forEach((l) => { l.base += need; }));
+        ui.refresh();
+        startGeneration();
+        msg += `; облака подняты на ${need} м`;
+      }
+    }
+    ui.setTerrainStatus(msg);
+    const [vp, vt] = d.loc.view;
+    camera.position.set(...vp);
+    controls.target.set(...vt);
+    controls.update();
+  } catch (e) {
+    if (token === terr.token) ui.setTerrainStatus(`Не удалось загрузить: ${e.message}`);
+  }
+}
+// высота поверхности под точкой (км) — для удержания камеры над землёй
+const surfaceY = (x, z) => (terr.data ? terr.data.heightAt(x, z) : ground.position.y);
 
 // ---------------------------------------------------------------------------
 // Камера
@@ -747,6 +840,8 @@ const ui = buildUI({
   onAtmosphereChanged: () => updateAtmosphere(),
   onRenderChanged: () => applyRender(),
   onShare: () => shareLink(),
+  onTerrainChanged: () => applyTerrain(),
+  LOCATIONS, IMAGERY,
   onPreset: applyPreset,
   onCamera: setCameraView,
 });
@@ -787,6 +882,9 @@ function applyConfig(c) {
   state.zones = c.zones.map((z) => ({ layers: z.layers.map(({ type, ...over }) => makeLayer(type, over)) }));
   state.zones.forEach((z) => enforceNonOverlap(z.layers));
   state.sel = c.sel;
+  const terrainChanged = state.terrain !== c.terrain || state.imagery !== c.imagery;
+  state.terrain = c.terrain; state.imagery = c.imagery;
+  if (terrainChanged) { state.raiseClouds = false; applyTerrain().then(() => { state.raiseClouds = true; }); }
   ui.syncAll();
   ui.refresh();
   updateAtmosphere();
@@ -813,6 +911,7 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  resizeTargets();
 });
 
 // ---------------------------------------------------------------------------
@@ -858,12 +957,21 @@ renderer.setAnimationLoop((time) => {
   stepGeneration();
   updateAnim(dt);
   controls.update();
-  if (camera.position.y < 0.002) camera.position.y = 0.002;
+  const minY = surfaceY(camera.position.x, camera.position.z) + 0.002;
+  if (camera.position.y < minY) camera.position.y = minY;
   sky.position.copy(camera.position);
 
   renderer.setScissorTest(false);
   renderer.setViewport(0, 0, innerWidth, innerHeight);
+  // непрозрачная сцена → буфер с глубиной → на экран; поверх — облака, обрезанные по этой глубине
+  renderer.setRenderTarget(opaqueRT);
   renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  renderer.render(blit.scene, fsCam);
+  camera.getWorldDirection(cloudMat.uniforms.uCamFwd.value);
+  renderer.autoClear = false;
+  renderer.render(cloudScene, camera);
+  renderer.autoClear = true;
 
   // миникарта радара: место и размер — из CSS; свёрнутую не рисуем
   const rr = radarCanvas.getBoundingClientRect();

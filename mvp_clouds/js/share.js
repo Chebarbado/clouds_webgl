@@ -20,6 +20,7 @@ export function packState(state, camera, controls, typeKeys) {
     r(state.visibilityKm, 10),
     [r(state.densMul, 100), r(state.ext), r(state.erode, 100), r(state.exposure, 100), QUALITIES.indexOf(state.quality)],
     [r(p.x, 100), r(p.y, 100), r(p.z, 100), r(t.x, 100), r(t.y, 100), r(t.z, 100)],
+    [state.terrain || 0, state.imagery],
   ];
 }
 
@@ -47,6 +48,8 @@ export function unpackState(a, typeKeys) {
     densMul: num(dens / 100, 0.1, 3, 1), ext: num(ext, 2, 80, 45), erode: num(erode / 100, 0, 1.5, 1),
     exposure: num(expo / 100, 0.3, 3, 1.1), quality: QUALITIES[q] ?? 'medium',
     camera: Array.isArray(a[15]) && a[15].length === 6 ? a[15].map((v) => v / 100) : null,
+    terrain: typeof a[16]?.[0] === 'string' && /^[a-z]+$/.test(a[16][0]) ? a[16][0] : '',
+    imagery: a[16]?.[1] === 'esri' ? 'esri' : 's2',
   };
 }
 

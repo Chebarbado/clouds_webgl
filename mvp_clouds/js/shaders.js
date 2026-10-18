@@ -469,6 +469,10 @@ uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uAmbBottom, uHazeCol
 uniform float uExt, uDensMul, uStepNear, uStepGrow, uLightStep, uHazeBeta, uExposure;
 uniform int uMaxSteps;
 uniform float uLite;          // 1 — облегчённое освещение (телефоны, качество «низкое»)
+uniform sampler2D uDepth;     // глубина непрозрачной сцены (рельеф, здания, земля)
+uniform vec2 uRes;            // размер буфера кадра, пикс
+uniform float uNear, uFar;
+uniform vec3 uCamFwd;
 varying vec3 vWorld;
 ${common}
 ${volume}
@@ -499,6 +503,10 @@ void main() {
   vec3 rd = normalize(vWorld - ro);
   vec2 th = boxHit(ro, rd, uBoxMin, uBoxMax);
   float t0 = max(th.x, 0.), t1 = th.y;
+  // расстояние до непрозрачной поверхности по буферу глубины: облако за горой не рисуется
+  float zn = texture(uDepth, gl_FragCoord.xy / uRes).r * 2. - 1.;
+  float viewZ = 2. * uNear * uFar / ((uFar - uNear) * zn - (uFar + uNear));
+  t1 = min(t1, -viewZ / max(dot(rd, uCamFwd), 1e-4));
   if (t1 <= t0) discard;
 
   float cosT = dot(rd, uSunDir);
@@ -599,18 +607,125 @@ void main() {
 }
 `;
 
+// Освещение непрозрачной поверхности (рельеф, здания): солнце с тенью от облаков, свет неба
+// с затенением при сплошной облачности, отражённый от земли свет и дымка по расстоянию
+const surface = /* glsl */`
+vec3 litSurface(vec3 p, vec3 n, vec3 alb, float spec) {
+  float tau = 0.;
+  vec2 th = boxHit(p, uSunDir, uBoxMin, uBoxMax);
+  float a = max(th.x, 0.);
+  if (th.y > a && uSunDir.y > 0.) {
+    float dt = (th.y - a) / 20.;
+    for (int i = 0; i < 20; i++) tau += volD(p + uSunDir * (a + (float(i) + .5) * dt)) * dt;
+  }
+  float sh = exp(-tau * uDensMul * uExt * .6);
+  float col = 0.;
+  if (all(lessThan(abs(p.xz), uBoxMax.xz))) {
+    float h = uBoxMax.y - uBoxMin.y;
+    for (int i = 0; i < 10; i++) col += volD(vec3(p.x, uBoxMin.y + (float(i) + .5) / 10. * h, p.z));
+    col *= h / 10.;
+  }
+  float amb = mix(.3, 1., exp(-col * uDensMul * uExt * .05));
+  vec3 vd = normalize(p - cameraPosition);
+  float ndl = max(dot(n, uSunDir), 0.);
+  vec3 c = alb * (uSunColor * ndl * sh + uAmbTop * amb * (.55 + .45 * n.y) + uAmbBottom * (.5 - .5 * n.y));
+  if (spec > 0.) {                                        // вода: блик солнца и отражение неба
+    vec3 hv = normalize(uSunDir - vd);
+    c += uSunColor * sh * spec * pow(max(dot(n, hv), 0.), 180.) * 4.;
+    c += uAmbTop * spec * .35 * pow(1. - max(dot(n, -vd), 0.), 4.);
+  }
+  float d = length(p - cameraPosition);
+  float fog = exp(-hazeTau(cameraPosition, vd, d, uHazeBeta));
+  vec3 hc = uHazeColor + uSunColor * .025 * hg(dot(vd, uSunDir), .7);
+  return mix(hc, c, fog);
+}
+`;
+
+const surfaceVert = /* glsl */`
+varying vec3 vWorld;
+varying vec3 vNormal;
+varying vec2 vUv;
+varying vec3 vColor;      // атрибут color объявляет three.js при vertexColors (USE_COLOR)
+void main() {
+  vec4 w = modelMatrix * vec4(position, 1.);
+  vWorld = w.xyz;
+  vNormal = normalize(mat3(modelMatrix) * normal);
+  vUv = uv;
+#ifdef USE_COLOR
+  vColor = color;
+#else
+  vColor = vec3(1.);
+#endif
+  gl_Position = projectionMatrix * viewMatrix * w;
+}
+`;
+export { surfaceVert };
+
+const surfaceHead = /* glsl */`
+precision highp float;
+precision highp sampler3D;
+uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uAmbBottom, uHazeColor;
+uniform float uExt, uDensMul, uHazeBeta, uExposure;
+varying vec3 vWorld;
+varying vec3 vNormal;
+varying vec2 vUv;
+varying vec3 vColor;
+${common}
+${volume}
+${surface}
+`;
+
+// Рельеф: снимок как альбедо (sRGB → линейный), море — вода с бликом
+export const terrainFrag = /* glsl */`
+${surfaceHead}
+uniform sampler2D uImage;
+uniform float uWater;         // уровень водной глади, км (−1 — воды нет)
+void main() {
+  vec3 alb = pow(texture(uImage, vUv).rgb, vec3(2.2)) * 1.15;
+  vec3 n = normalize(vNormal);
+  float water = uWater < 0. ? 0. : (1. - smoothstep(uWater + .0003, uWater + .002, vWorld.y)) * smoothstep(.97, .995, n.y);
+  alb = mix(alb, alb * .6, water);
+  gl_FragColor = vec4(toDisplay(litSurface(vWorld, n, alb, water), uExposure), 1.);
+}
+`;
+
+// Здания: цвет вершин; лёгкая полосатость этажей на стенах вблизи
+export const buildingFrag = /* glsl */`
+${surfaceHead}
+void main() {
+  vec3 n = normalize(vNormal);
+  vec3 alb = vColor;
+  if (abs(n.y) < .5) {
+    float floors = fract(vWorld.y / .0032);
+    float near = 1. - smoothstep(1.5, 6., length(vWorld - cameraPosition));
+    alb *= 1. - .25 * near * smoothstep(.55, .75, floors) * (1. - smoothstep(.85, .95, floors));
+  }
+  gl_FragColor = vec4(toDisplay(litSurface(vWorld, n, alb, 0.), uExposure), 1.);
+}
+`;
+
+// Копия кадра непрозрачной сцены на экран (облака затем дорисовываются поверх)
+export const blitFrag = /* glsl */`
+precision highp float;
+uniform sampler2D uTex;
+varying vec2 vUv;
+void main() { gl_FragColor = texture(uTex, vUv); }
+`;
+
 export const groundFrag = /* glsl */`
 precision highp float;
 precision highp sampler3D;
 uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uHazeColor;
 uniform float uExt, uDensMul, uHazeBeta, uExposure;
+uniform vec4 uHole;          // (xmin, zmin, xmax, zmax) квадрата рельефа, км
 varying vec3 vWorld;
 ${noise}
 ${common}
 ${volume}
 float D(vec3 p) { return volD(p); }
 void main() {
-  vec3 p = vec3(vWorld.x, 0., vWorld.z);
+  vec3 p = vWorld;
+  if (all(greaterThan(p.xz, uHole.xy)) && all(lessThan(p.xz, uHole.zw))) discard;   // здесь лежит загруженный рельеф
   // ландшафт: вытянутые поля (~0.4×0.8 км), поделённые на полосы разных культур, рядки посевов,
   // дороги и лесополосы по межам, массивы леса с кронами. Каждая мелкая деталь гаснет, когда становится
   // меньше пикселя (fwidth) — вблизи есть текстура, вдали нет ряби.
