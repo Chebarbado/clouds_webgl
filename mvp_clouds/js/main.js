@@ -35,7 +35,6 @@ const state = {
   visibilityKm: 100, densMul: 1, ext: 45, exposure: 1.1, erode: 1.0,
   quality: MOBILE ? 'low' : 'medium', showBox: false,
   terrain: '', imagery: 's2', raiseClouds: true,   // ландшафт: '' — процедурная земля
-  clump: 1,                                         // распределение облаков: 0 равномерно, 1 случайно, 2 к центру, 3 один комок
 };
 // слои выбранной зоны — их редактирует панель
 Object.defineProperty(state, 'layers', {
@@ -45,7 +44,8 @@ Object.defineProperty(state, 'layers', {
 
 let nextLayerId = 1;
 export function makeLayer(type, over = {}) {
-  return { id: nextLayerId++, enabled: true, type, ...CLOUD_TYPES[type].defaults, ...over };
+  // clump — распределение облаков слоя: 0 равномерно, 1 случайно, 2 ближе к центру, 3 один комок
+  return { id: nextLayerId++, enabled: true, type, clump: 1, ...CLOUD_TYPES[type].defaults, ...over };
 }
 const layerTop = (l) => l.base + l.minT + l.range;
 const layerBottom = (l) => l.base - (CLOUD_TYPES[l.type].rag + CLOUD_TYPES[l.type].wave) * l.minT;
@@ -218,7 +218,7 @@ const gen = fsScene(S.genFrag, {
   uZ: { value: 0 }, uOrigin: { value: new THREE.Vector2() }, uSize: { value: new THREE.Vector2() },
   uWorld: { value: new THREE.Vector2() }, uGrid: { value: new THREE.Vector2(1, 1) },
   uTile: { value: 32000 }, uBlend: { value: 8000 }, uNG: { value: 0 },
-  uOff: { value: new THREE.Vector2() }, uTime: { value: 0 }, uDev: { value: 0 }, uClump: { value: 1 },
+  uOff: { value: new THREE.Vector2() }, uTime: { value: 0 }, uDev: { value: 0 },
   uWind: { value: new THREE.Vector2(1, 0.35).normalize() },
   uGA: { value: vec4s(MAX_GROUPS * MAX_ZONES) },
   uGB: { value: vec4s(MAX_GROUPS) }, uGC: { value: vec4s(MAX_GROUPS) }, uGD: { value: vec4s(MAX_GROUPS) },
@@ -375,7 +375,8 @@ function startGeneration() {
     U.uGD.value[gi].set(amp, bScale, t.rag, t.rows);
     U.uGE.value[gi].set(t.skew, t.smoothTop, t.flat, seed);
     U.uGF.value[gi].set(t.aspect, t.billowTop, t.billowBottom, cumulo ? t.deck : t.wave);
-    U.uGZ.value[gi].set(g.zmin, g.zmax, t.life, 0);
+    // распределение — из первой зоны, где есть этот слой (у группы общая сетка ячеек на весь мир)
+    U.uGZ.value[gi].set(g.zmin, g.zmax, t.life, g.entries.find(Boolean).clump ?? 1);
     g.zone.forEach((z, zi) => U.uGA.value[gi * MAX_ZONES + zi].set(z.base, z.minT, z.range, z.cov));
   });
 
@@ -421,7 +422,6 @@ function genPass() {
   U.uOff.value.copy(set.off);
   U.uTime.value = set.t;
   U.uDev.value = state.develop ? 1 : 0;
-  U.uClump.value = state.clump;
   U.uWind.value.copy(windDir());
   const rt = set.rts[job.s];
   rt.viewport.set(tx * tileRes, ty * tileRes, tileRes, tileRes);
@@ -719,9 +719,15 @@ function clearTerrain() {
 async function applyTerrain() {
   const token = ++terr.token;
   const key = state.terrain;
-  if (!key) { clearTerrain(); ui.setTerrainStatus(''); return; }
+  if (!key) { clearTerrain(); ui.setTerrainStatus(''); ui.setProgress('terrain', null); return; }
   try {
-    const d = await loadTerrain(key, state.imagery, { mobile: MOBILE, onStatus: (t) => token === terr.token && ui.setTerrainStatus(t) });
+    ui.setProgress('terrain', 0, `Ландшафт: ${LOCATIONS[key].label}`);
+    const d = await loadTerrain(key, state.imagery, {
+      mobile: MOBILE,
+      onStatus: (t) => token === terr.token && ui.setTerrainStatus(t),
+      onProgress: (f, t) => token === terr.token && ui.setProgress('terrain', f, `Ландшафт: ${t || LOCATIONS[key].label}`),
+    });
+    ui.setProgress('terrain', null);
     if (token !== terr.token) { d.geo.dispose(); d.tex.dispose(); d.buildings?.geo.dispose(); return; }
     clearTerrain();
     terr.data = d;
@@ -762,7 +768,7 @@ async function applyTerrain() {
     controls.target.set(...vt);
     controls.update();
   } catch (e) {
-    if (token === terr.token) ui.setTerrainStatus(`Не удалось загрузить: ${e.message}`);
+    if (token === terr.token) { ui.setTerrainStatus(`Не удалось загрузить: ${e.message}`); ui.setProgress('terrain', null); }
   }
 }
 // высота поверхности под точкой (км) — для удержания камеры над землёй
@@ -874,7 +880,7 @@ async function shareLink() {
 
 function applyConfig(c) {
   const keys = ['tileKm', 'grid', 'blendKm', 'seed', 'resH', 'resV', 'slabMode', 'wind', 'windSpeed', 'windFrom', 'develop',
-    'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality', 'clump'];
+    'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality'];
   for (const k of keys) state[k] = c[k];
   if (MOBILE) {                                   // ссылку с десктопа ужимаем до возможностей телефона
     state.quality = 'low';
@@ -994,6 +1000,8 @@ renderer.setAnimationLoop((time) => {
   const alt = (camera.position.y * 1000).toFixed(0);
   const mm = Math.floor(anim.t / 60), ss = Math.floor(anim.t % 60);
   const sim = animOn() ? ` · время +${mm}:${String(ss).padStart(2, '0')}` : '';
+  // прогресс генерации облаков — пока не готов отображаемый кадр (фоновые кадры динамики не показываем)
+  ui.setProgress('gen', sets[0].ready ? null : job.done / job.total, 'Генерация облаков');
   const genTxt = !sets[0].ready ? ` · генерация ${Math.round((job.done / job.total) * 100)}%` : animOn() ? '' : ` · объём за ${job.lastMs.toFixed(0)} мс`;
   ui.setHud(`${fps.toFixed(0)} FPS · камера ${alt} м${sim}${genTxt}`);
 });

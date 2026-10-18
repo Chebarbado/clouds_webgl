@@ -16,6 +16,8 @@ function slider(label, min, max, step, value, fmt, onInput, onChange) {
 }
 
 const m = (v) => `${v} м`;
+const CLUMP_NAMES = ['равномерно', 'случайно', 'к центру', 'один комок'];
+const CLUMP_OPTIONS = ['Равномерно', 'Случайно', 'Ближе к центру', 'Один комок'].map((t, i) => `<option value="${i}">${t}</option>`).join('');
 
 export function buildUI(ctx) {
   const { state, CLOUD_TYPES, PRESETS, MAX_LAYERS } = ctx;
@@ -52,7 +54,8 @@ export function buildUI(ctx) {
           <span class="sum"></span>
           <button class="del" title="Удалить слой">✕</button>
         </div>
-        <select class="type">${typeOptions}</select>`;
+        <select class="type">${typeOptions}</select>
+        <label class="inline">Распределение<select class="clump">${CLUMP_OPTIONS}</select></label>`;
       const sel = card.querySelector('.type');
       sel.value = l.type;
       const top = document.createElement('div');
@@ -61,7 +64,7 @@ export function buildUI(ctx) {
       const sum = card.querySelector('.sum');
       const updTop = () => {
         top.textContent = `Верхняя граница до ${ctx.layerTop(l)} м`;
-        sum.textContent = `${CLOUD_TYPES[l.type].label.split(' (')[0]} · ${l.oktas}/8 · ${l.base}–${ctx.layerTop(l)} м`;
+        sum.textContent = `${CLOUD_TYPES[l.type].label.split(' (')[0]} · ${l.oktas}/8 · ${l.base}–${ctx.layerTop(l)} м · ${CLUMP_NAMES[l.clump ?? 1]}`;
       };
       card.classList.toggle('folded', !!l.collapsed);
       card.querySelector('.fold').addEventListener('click', () => {
@@ -83,6 +86,9 @@ export function buildUI(ctx) {
         card.classList.toggle('off', !l.enabled);
         settle();
       });
+      const clumpSel = card.querySelector('.clump');
+      clumpSel.value = String(l.clump ?? 1);
+      clumpSel.addEventListener('change', () => { l.clump = +clumpSel.value; updTop(); ctx.onLayersChanged(); });
       sel.addEventListener('change', () => {
         Object.assign(l, { type: sel.value }, CLOUD_TYPES[sel.value].defaults);
         ctx.enforceNonOverlap();
@@ -214,9 +220,6 @@ export function buildUI(ctx) {
   const rExp = slider('Экспозиция', 0.3, 3, 0.05, state.exposure, (v) => v.toFixed(2), (v) => { state.exposure = v; ctx.onAtmosphereChanged(); });
   renEl.append(rDens, rExt, rEro, rExp);
   $('showBox').addEventListener('change', (e) => { state.showBox = e.target.checked; ctx.onRenderChanged(); });
-  const clumpSel = $('clump');
-  clumpSel.value = String(state.clump);
-  clumpSel.addEventListener('change', () => { state.clump = +clumpSel.value; ctx.onVolumeChanged(); });
 
   $('togglePanel').addEventListener('click', () => document.body.classList.toggle('panel-hidden'));
   $('radarTitle').addEventListener('click', () => document.body.classList.toggle('radar-hidden'));
@@ -232,10 +235,49 @@ export function buildUI(ctx) {
   $('shareBtn').addEventListener('click', ctx.onShare);
   shareOut.addEventListener('focus', () => shareOut.select());
 
+  // --- разделы панели сворачиваются в одну строку (клик по заголовку); справа — краткая сводка
+  const optText = (s) => s.selectedOptions[0]?.textContent ?? '';
+  const SUMMARY = {
+    preset: () => (presetSel.value ? optText(presetSel) : ''),
+    zones: () => `${state.grid.nx}×${state.grid.ny}${state.grid.nx * state.grid.ny > 1 ? `, переход ${state.blendKm} км` : ''}`,
+    layers: () => { const n = state.layers.filter((l) => l.enabled).length; return `${n} ${n === 1 ? 'слой' : n < 5 ? 'слоя' : 'слоёв'}`; },
+    terrain: () => optText(terrSel),
+    dynamics: () => [state.wind ? `ветер ${state.windSpeed} м/с` : 'без ветра', state.develop ? 'развитие' : ''].filter(Boolean).join(', '),
+    visibility: () => visFmt(visToSlider(state.visibilityKm)),
+    sun: () => `${Math.round(state.sunAz)}° / ${state.sunEl}°`,
+    camera: () => '',
+    volume: () => `${state.resH}² × ${state.resV}`,
+    render: () => optText(q),
+  };
+  let folded = {};
+  try { folded = JSON.parse(localStorage.getItem('clouds.folded') || '{}'); } catch { /* хранилище недоступно */ }
+  const sections = [...document.querySelectorAll('#panel section[data-sec]')];
+  const updateSummaries = () => sections.forEach((sec) => {
+    if (sec.classList.contains('folded')) sec.querySelector('.ssum').textContent = SUMMARY[sec.dataset.sec]?.() ?? '';
+  });
+  for (const sec of sections) {
+    const h = sec.querySelector('h2');
+    h.insertAdjacentHTML('afterbegin', '<span class="chev">▾</span>');
+    h.insertAdjacentHTML('beforeend', '<span class="ssum"></span>');
+    const set = (f) => {
+      sec.classList.toggle('folded', f);
+      h.querySelector('.chev').textContent = f ? '▸' : '▾';
+      updateSummaries();
+    };
+    set(!!folded[sec.dataset.sec]);
+    h.addEventListener('click', () => {
+      folded[sec.dataset.sec] = !sec.classList.contains('folded');
+      set(folded[sec.dataset.sec]);
+      try { localStorage.setItem('clouds.folded', JSON.stringify(folded)); } catch { /* хранилище недоступно */ }
+    });
+    sec.addEventListener('input', updateSummaries);
+    sec.addEventListener('change', updateSummaries);
+  }
+
   return {
     refresh() {
       domSel.value = String(state.tileKm); presetSel.value = ''; warn.textContent = '';
-      blend.set(state.blendKm); renderLayers(); renderZones();
+      blend.set(state.blendKm); renderLayers(); renderZones(); updateSummaries();
     },
     syncSun() { az.set(state.sunAz); },
     syncVisibility() { vis.set(visToSlider(state.visibilityKm)); },
@@ -248,9 +290,24 @@ export function buildUI(ctx) {
       rDens.set(state.densMul); rExt.set(state.ext); rEro.set(state.erode); rExp.set(state.exposure);
       syncDynamics();
       terrSel.value = state.terrain; imgSel.value = state.imagery;
-      clumpSel.value = String(state.clump);
     },
     setTerrainStatus(t) { $('terrStatus').textContent = t; },
+    // прогресс-бар поверх сцены: frac ∈ [0, 1] или null — скрыть
+    setProgress(key, frac, label = '') {
+      const box = $('progress');
+      let row = box.querySelector(`[data-k="${key}"]`);
+      if (frac === null || frac === undefined) { row?.remove(); return; }
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'prow'; row.dataset.k = key;
+        row.innerHTML = '<div class="plabel"><span></span><b></b></div><div class="pbar"><i></i></div>';
+        box.append(row);
+      }
+      const pct = Math.round(frac * 100);
+      row.querySelector('span').textContent = label;
+      row.querySelector('b').textContent = `${pct}%`;
+      row.querySelector('i').style.width = `${pct}%`;
+    },
     showShare(url, copied) {
       shareOut.value = url;
       shareOut.parentElement.style.display = '';

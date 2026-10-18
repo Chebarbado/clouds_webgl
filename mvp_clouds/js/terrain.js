@@ -64,7 +64,7 @@ function loadImage(url) {
 }
 
 // Мозаика плиток, покрывающих область; на выходе — canvas ровно по области (в родном разрешении уровня z)
-async function mosaic(urlFn, z, reg, onTile) {
+async function mosaic(urlFn, z, reg, onTile) {   // onTile(готово, всего)
   const [x0, y0, x1, y1] = reg;
   const tx0 = Math.floor(x0 / TILE), ty0 = Math.floor(y0 / TILE), tx1 = Math.floor(x1 / TILE), ty1 = Math.floor(y1 / TILE);
   const cw = Math.ceil(x1 - x0), ch = Math.ceil(y1 - y0);
@@ -73,13 +73,13 @@ async function mosaic(urlFn, z, reg, onTile) {
   const g = cv.getContext('2d', { willReadFrequently: true });
   const jobs = [];
   for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) jobs.push([tx, ty]);
-  let i = 0;
+  let i = 0, loaded = 0;
   const worker = async () => {
     while (i < jobs.length) {
       const [tx, ty] = jobs[i++];
       const img = await loadImage(urlFn(z, tx, ty));
       g.drawImage(img, tx * TILE - x0, ty * TILE - y0);
-      onTile?.();
+      onTile?.(++loaded, jobs.length);
     }
   };
   await Promise.all(Array.from({ length: 8 }, worker));                 // не больше 8 запросов одновременно
@@ -89,16 +89,23 @@ async function mosaic(urlFn, z, reg, onTile) {
 // ---------------------------------------------------------------------------
 // Загрузка: высоты (сетка N×N, км) + снимок (текстура) + при наличии — здания
 // ---------------------------------------------------------------------------
-export async function loadTerrain(key, imageryKey, { mobile = false, onStatus = () => {} } = {}) {
+// кадр браузеру между тяжёлыми этапами — чтобы успел перерисовать прогресс
+const yieldFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+export async function loadTerrain(key, imageryKey, { mobile = false, onStatus = () => {}, onProgress = () => {} } = {}) {
   const loc = LOCATIONS[key], img = IMAGERY[imageryKey];
+  // доли этапов в общем прогрессе: рельеф, снимок, здания (если есть)
+  const wH = loc.buildings ? 0.3 : 0.35, wI = loc.buildings ? 0.5 : 0.6;
+  const step = (f, label) => { onProgress(Math.min(1, f), label); onStatus(label); };
   const N = mobile ? 256 : 384;
 
   // рельеф: родное разрешение плиток, затем билинейная выборка на сетку N×N (кодированные RGB смешивать нельзя)
   const zh = Math.min(pickZoom(loc, N * 1.2, 14), 14);
   const regH = regionPx(loc, zh);
-  let done = 0;
-  onStatus('Рельеф: загрузка плиток…');
-  const mh = await mosaic(TERRAIN_URL, zh, regH, () => onStatus(`Рельеф: плитка ${++done}`));
+  step(0, 'Рельеф: загрузка плиток…');
+  const mh = await mosaic(TERRAIN_URL, zh, regH, (k, n) => step(wH * k / n, `Рельеф: плитка ${k} из ${n}`));
+  step(wH, 'Рельеф: обработка…');
+  await yieldFrame();
   const { width: hw, height: hh } = mh.canvas;
   const px = mh.canvas.getContext('2d').getImageData(0, 0, hw, hh).data;
   const raw = new Float32Array(hw * hh);
@@ -128,9 +135,10 @@ export async function loadTerrain(key, imageryKey, { mobile = false, onStatus = 
   const target = mobile ? 1024 : 2048;
   const zi = Math.min(pickZoom(loc, target, img.maxZ), img.maxZ);
   const regI = regionPx(loc, zi);
-  done = 0;
-  onStatus('Снимок: загрузка плиток…');
-  const mi = await mosaic(img.url, zi, regI, () => onStatus(`Снимок: плитка ${++done}`));
+  step(wH + 0.02, 'Снимок: загрузка плиток…');
+  const mi = await mosaic(img.url, zi, regI, (k, n) => step(wH + 0.02 + (wI - 0.02) * k / n, `Снимок: плитка ${k} из ${n}`));
+  step(wH + wI, 'Построение поверхности…');
+  await yieldFrame();
   const side = Math.min(target, Math.max(mi.canvas.width, mi.canvas.height));
   const tc = document.createElement('canvas');
   tc.width = tc.height = side;
@@ -158,10 +166,13 @@ export async function loadTerrain(key, imageryKey, { mobile = false, onStatus = 
 
   let buildings = null;
   if (loc.buildings) {
-    onStatus('Здания: загрузка…');
-    buildings = buildBuildings(await (await fetch(loc.buildings)).json(), heightAt);
+    step(wH + wI + 0.03, 'Здания: загрузка…');
+    const json = await (await fetch(loc.buildings)).json();
+    step(0.93, 'Здания: построение…');
+    await yieldFrame();
+    buildings = buildBuildings(json, heightAt);
   }
-  onStatus('');
+  step(1, '');
   return { key, loc, size, N, heights, heightAt, stats, geo, tex, buildings,
     attribution: [TERRAIN_ATTRIBUTION, img.attribution, buildings ? 'Здания © OpenStreetMap contributors (ODbL)' : ''].filter(Boolean).join(' · ') };
 }

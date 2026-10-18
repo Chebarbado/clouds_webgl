@@ -6,19 +6,19 @@
   <meta name="theme-color" content="#0e141e">
   <title>Volumetric Clouds MVP</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=20261018d">
+  <link rel="stylesheet" href="style.css?v=20261018g">
   <!-- ?v= — версия модулей: GitHub Pages кэширует файлы на 10 мин, без версии телефон смешивает старые и новые
        модули. При изменении любого js в mvp_clouds/js меняйте версию здесь (во всех строках, в теге main.js и у style.css). -->
   <script type="importmap">
     { "imports": {
       "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
-      "./js/main.js": "./js/main.js?v=20261018d",
-      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261018d",
-      "./js/shaders.js": "./js/shaders.js?v=20261018d",
-      "./js/ui.js": "./js/ui.js?v=20261018d",
-      "./js/atmosphere.js": "./js/atmosphere.js?v=20261018d",
-      "./js/share.js": "./js/share.js?v=20261018d",
-      "./js/terrain.js": "./js/terrain.js?v=20261018d"
+      "./js/main.js": "./js/main.js?v=20261018g",
+      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261018g",
+      "./js/shaders.js": "./js/shaders.js?v=20261018g",
+      "./js/ui.js": "./js/ui.js?v=20261018g",
+      "./js/atmosphere.js": "./js/atmosphere.js?v=20261018g",
+      "./js/share.js": "./js/share.js?v=20261018g",
+      "./js/terrain.js": "./js/terrain.js?v=20261018g"
     } }
   </script>
 </head>
@@ -30,12 +30,12 @@
     <div class="shareBox" style="display:none"><input id="shareOut" readonly><div id="shareMsg" class="muted"></div></div>
     <a class="muted" href="meteo.html" style="color:#5fb4ff">Метеомодель облакообразования →</a>
 
-    <section>
+    <section data-sec="preset">
       <h2>Пресет</h2>
       <select id="preset"></select>
     </section>
 
-    <section>
+    <section data-sec="zones">
       <h2>Зоны (смежные density volume)</h2>
       <label>Сетка зон<select id="grid">
         <option value="1x1">1 × 1 (одна зона)</option><option value="2x1">2 × 1</option><option value="1x2">1 × 2</option>
@@ -55,14 +55,14 @@
       </select></label>
     </section>
 
-    <section>
+    <section data-sec="layers">
       <h2>Слои облачности <span id="zoneTitle"></span></h2>
       <div id="layers"></div>
       <button id="addLayer">+ Добавить слой</button>
       <div id="layerWarn" class="warn"></div>
     </section>
 
-    <section>
+    <section data-sec="terrain">
       <h2>Ландшафт</h2>
       <label>Место<select id="terrain"></select></label>
       <label>Снимок поверхности<select id="imagery"></select></label>
@@ -71,7 +71,7 @@
       <div class="muted">Высоты слоёв — над уровнем моря. Данные: AWS Terrain Tiles, Sentinel-2 / Esri, здания — OpenStreetMap.</div>
     </section>
 
-    <section>
+    <section data-sec="dynamics">
       <h2>Динамика</h2>
       <label class="check"><input type="checkbox" id="windOn"> Ветер — перенос облаков</label>
       <div id="windCtl"></div>
@@ -81,18 +81,18 @@
         Направление ветра также разворачивает снос наковален, волокна Ci и гряды.</div>
     </section>
 
-    <section>
+    <section data-sec="visibility">
       <h2>Видимость</h2>
       <div id="atmo"></div>
     </section>
 
-    <section>
+    <section data-sec="sun">
       <h2>Солнце</h2>
       <div id="sun"></div>
       <label class="check"><input type="checkbox" id="animSun"> Вращать солнце</label>
     </section>
 
-    <section>
+    <section data-sec="camera">
       <h2>Камера</h2>
       <div class="btns">
         <button data-cam="overview">Обзор</button>
@@ -107,7 +107,7 @@
       <div class="muted">ЛКМ — вращение, ПКМ — сдвиг, колесо — зум. Клик по радару переносит точку обзора.</div>
     </section>
 
-    <section>
+    <section data-sec="volume">
       <h2>Density volume</h2>
       <div class="grid2">
         <label>Размер зоны<select id="domain">
@@ -125,21 +125,18 @@
       <div id="info" class="muted"></div>
     </section>
 
-    <section>
+    <section data-sec="render">
       <h2>Рендер</h2>
       <label>Качество<select id="quality">
         <option value="low">Низкое</option><option value="medium">Среднее</option><option value="high">Высокое</option>
       </select></label>
       <div id="render"></div>
-      <label>Распределение облаков<select id="clump">
-        <option value="0">Равномерно</option><option value="1">Случайно</option>
-        <option value="2">Ближе к центру</option><option value="3">Один комок</option>
-      </select></label>
       <label class="check"><input type="checkbox" id="showBox"> Показать границы объёма</label>
     </section>
   </aside>
 
   <div id="hud"></div>
+  <div id="progress"></div>
   <div id="attrib"></div>
   <div id="radar">
     <button id="radarTitle" title="Свернуть / развернуть радар">Метеорадар · dBZ</button>
@@ -153,6 +150,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/main.js?v=20261018d"></script>
+  <script type="module" src="js/main.js?v=20261018g"></script>
 </body>
 </html>
