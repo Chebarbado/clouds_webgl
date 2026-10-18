@@ -192,6 +192,13 @@ export function buildUI(ctx) {
   $('showBox').addEventListener('change', (e) => { state.showBox = e.target.checked; ctx.onRenderChanged(); });
 
   $('togglePanel').addEventListener('click', () => document.body.classList.toggle('panel-hidden'));
+  $('radarTitle').addEventListener('click', () => document.body.classList.toggle('radar-hidden'));
+  // на телефоне панель — шторка, по умолчанию закрыта; выбор пресета или камеры её закрывает
+  const mobile = matchMedia('(max-width: 760px)');
+  if (mobile.matches) document.body.classList.add('panel-hidden');
+  const closeOnMobile = () => { if (mobile.matches) document.body.classList.add('panel-hidden'); };
+  presetSel.addEventListener('change', closeOnMobile);
+  document.querySelectorAll('[data-cam]').forEach((b) => b.addEventListener('click', closeOnMobile));
 
   // --- ссылка на конфигурацию
   const shareOut = $('shareOut');
@@ -217,7 +224,12 @@ export function buildUI(ctx) {
     showShare(url, copied) {
       shareOut.value = url;
       shareOut.parentElement.style.display = '';
+      if (!copied) {                       // запасной способ: выделить поле и скопировать
+        shareOut.focus(); shareOut.select();
+        try { copied = document.execCommand('copy'); } catch { copied = false; }
+      }
       $('shareMsg').textContent = copied ? `Ссылка скопирована (${url.length} символов)` : 'Скопируйте ссылку из поля';
+      return copied;
     },
     updateInfo(html) { $('info').innerHTML = html; },
     setHud(text) { $('hud').textContent = text; },

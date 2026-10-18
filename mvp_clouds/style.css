@@ -57,13 +57,43 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 #hud { position: fixed; top: 10px; right: 16px; background: var(--bg); padding: 4px 10px; border-radius: 4px; font-variant-numeric: tabular-nums; }
 
+/* миникарта: размер и место задаются здесь, WebGL берёт их из прямоугольника #radarOverlay */
 #radar { position: fixed; right: 16px; bottom: 34px; width: 300px; height: 300px; pointer-events: none; }
-#radarOverlay { position: absolute; inset: 0; width: 300px; height: 300px; border: 1px solid rgba(120,255,160,.5); border-radius: 4px; pointer-events: auto; cursor: crosshair; }
-#radarTitle { position: absolute; top: -22px; left: 0; color: #9fe8b4; font-size: 12px; }
+#radarOverlay { position: absolute; inset: 0; width: 100%; height: 100%; border: 1px solid rgba(120,255,160,.5); border-radius: 4px; pointer-events: auto; cursor: crosshair; }
+#radarTitle { position: absolute; top: -24px; left: 0; color: #9fe8b4; font-size: 12px; background: none; border: none; padding: 2px 0; pointer-events: auto; }
 #legend { position: absolute; left: 0; right: 0; bottom: -18px; display: flex; }
 #legend span { flex: 1; font-size: 9px; text-align: center; color: #000; line-height: 14px; }
+body.radar-hidden #radarOverlay, body.radar-hidden #legend { display: none; }
+body.radar-hidden #radarTitle::after { content: ' ▸'; }
 
-@media (max-width: 700px) {
-  #panel { width: 100%; bottom: 50%; }
-  #togglePanel { left: auto; right: 10px; top: 44px; }
+/* ---- телефон: панель-шторка снизу, радар и HUD компактно сверху, крупные элементы управления ---- */
+@media (max-width: 760px) {
+  html, body { font-size: 14px; }
+  #panel {
+    top: auto; right: 0; width: 100%; max-height: 65vh; max-height: 65dvh;
+    border-right: none; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+    padding: 10px 16px calc(24px + env(safe-area-inset-bottom));
+    transition: transform .25s ease; transform: translateY(0); box-shadow: 0 -8px 30px rgba(0,0,0,.4);
+  }
+  body.panel-hidden #panel { display: block; transform: translateY(105%); }
+  #togglePanel, body.panel-hidden #togglePanel {
+    left: 16px; top: auto; bottom: calc(16px + env(safe-area-inset-bottom));
+    width: 52px; height: 52px; border-radius: 50%; font-size: 22px; z-index: 20;
+    background: var(--bg); border-color: #3a5f8f; box-shadow: 0 4px 14px rgba(0,0,0,.45);
+  }
+  body:not(.panel-hidden) #togglePanel { bottom: calc(65vh + 10px); bottom: calc(65dvh + 10px); }
+  select, input[type=number], button, .shareBox input { min-height: 40px; font-size: 16px; }   /* 16px — iOS не масштабирует при фокусе */
+  input[type=range] { height: 28px; }
+  .layer .del { min-height: 32px; min-width: 32px; }
+  .btns { grid-template-columns: repeat(2, 1fr); }
+  .zone { min-height: 52px; }
+  .check { min-height: 32px; }
+  #hud {
+    top: calc(8px + env(safe-area-inset-top)); left: 8px; right: auto; max-width: calc(100% - 160px);
+    font-size: 11px; padding: 3px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #radar { top: calc(30px + env(safe-area-inset-top)); right: 8px; bottom: auto; width: 128px; height: 128px; }
+  #radarTitle { top: -22px; left: auto; right: 0; font-size: 11px; }
+  #legend { bottom: -13px; }
+  #legend span { font-size: 0; line-height: 9px; }
 }

@@ -9,25 +9,30 @@ import { packState, unpackState, encode, decode, hashCode } from './share.js';
 // ---------------------------------------------------------------------------
 // Состояние
 // ---------------------------------------------------------------------------
+// Телефон/планшет: узкий экран или сенсорный ввод — меньше объём, лёгкий рендер, панель-шторка
+const MOBILE = matchMedia('(max-width: 760px), (pointer: coarse)').matches;
 const QUALITY = {
-  low: { pr: 0.5, stepNear: 0.09, maxSteps: 256 },
-  medium: { pr: 0.75, stepNear: 0.045, maxSteps: 500 },
-  high: { pr: 1.0, stepNear: 0.03, maxSteps: 900 },
+  // lite — облегчённое освещение: 4 выборки к солнцу, без боковой затенённости и второй октавы деталей
+  low: { pr: MOBILE ? 0.4 : 0.5, stepNear: 0.09, maxSteps: MOBILE ? 160 : 256, lite: 1 },
+  medium: { pr: 0.75, stepNear: 0.045, maxSteps: 500, lite: 0 },
+  high: { pr: 1.0, stepNear: 0.03, maxSteps: 900, lite: 0 },
 };
 const MAX_LAYERS = 4;       // слоёв в одной зоне
 const MAX_GROUPS = 8;       // разных слоёв (тип + номер) во всём мире
 const MAX_ZONES = 9;        // сетка зон до 3×3
 const LAYER_GAP = 100;      // м, минимальный зазор между слоями зоны
 const MAX_ATLAS = 1024;     // предел стороны атласа зон по горизонтали, текселей
-const MAX_VOXELS = 160e6;   // предел суммарного объёма (RG8 → ~320 МБ видеопамяти)
+const MAX_VOXELS = MOBILE ? 40e6 : 160e6;   // предел суммарного объёма (RG8: ~80 / ~320 МБ видеопамяти)
+const GEN_BUDGET = MOBILE ? 1.5e6 : 6e6;     // вокселей генерации за кадр
+const MOBILE_RES = { resH: 256, resV: 128 }; // предел разрешения на телефоне
 
 const state = {
-  tileKm: 32, resH: 384, resV: 192, seed: 1,
+  tileKm: 32, resH: MOBILE ? MOBILE_RES.resH : 384, resV: MOBILE ? MOBILE_RES.resV : 192, seed: 1,
   grid: { nx: 1, ny: 1 }, zones: [{ layers: [] }], sel: 0, blendKm: 8, slabMode: 'auto',
   wind: false, windSpeed: 12, windFrom: 290, develop: false, timeScale: 30,
   sunAz: 280, sunEl: 35, animateSun: false,
   visibilityKm: 100, densMul: 1, ext: 45, exposure: 1.1, erode: 1.0,
-  quality: 'medium', showBox: false,
+  quality: MOBILE ? 'low' : 'medium', showBox: false,
 };
 // слои выбранной зоны — их редактирует панель
 Object.defineProperty(state, 'layers', {
@@ -133,7 +138,7 @@ const cloudMat = new THREE.ShaderMaterial({
     ...shared,
     uDetail: { value: null }, uDetailScale: { value: 0.6 }, uErode: { value: state.erode },
     uDetailShift: { value: new THREE.Vector2() }, uBoil: { value: 0 },
-    uStepNear: { value: 0.05 }, uStepGrow: { value: 0.04 }, uLightStep: { value: 0.05 }, uMaxSteps: { value: 400 },
+    uStepNear: { value: 0.05 }, uStepGrow: { value: 0.04 }, uLightStep: { value: 0.05 }, uMaxSteps: { value: 400 }, uLite: { value: 0 },
   },
 });
 const cloudBox = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), cloudMat);
@@ -413,7 +418,7 @@ function genPass() {
 
 function stepGeneration(all = false) {
   if (!job.active) return;
-  const per = all ? Infinity : Math.max(2, Math.floor(6e6 / (tileRes * tileRes)));
+  const per = all ? Infinity : Math.max(1, Math.floor(GEN_BUDGET / (tileRes * tileRes)));
   const ac = renderer.autoClear;
   renderer.autoClear = false;   // очистка стёрла бы соседние зоны в том же срезе атласа
   for (let n = 0; n < per && job.active; n++) genPass();
@@ -522,7 +527,7 @@ const radar = fsScene(S.radarFrag, {
   uVolB: shared.uVolB, uVolHiB: shared.uVolHiB, uMixB: shared.uMixB, uShiftA: shared.uShiftA, uShiftB: shared.uShiftB,
   uBoxMin: shared.uBoxMin, uBoxMax: shared.uBoxMax, uView: { value: new THREE.Vector4() },
 });
-const RADAR_PX = 300, RADAR_RIGHT = 16, RADAR_BOTTOM = 34;
+// Размер и место миникарты задаёт CSS (#radarOverlay); WebGL-вьюпорт берётся из его прямоугольника
 const radarCanvas = document.getElementById('radarOverlay');
 const rctx = radarCanvas.getContext('2d');
 
@@ -539,7 +544,8 @@ function zoneLabel(i) {
 
 function drawRadarOverlay(time) {
   const dpr = devicePixelRatio;
-  const W = RADAR_PX;
+  const W = Math.round(radarCanvas.getBoundingClientRect().width);
+  if (!W) return;
   if (radarCanvas.width !== W * dpr || radarCanvas.height !== W * dpr) { radarCanvas.width = radarCanvas.height = W * dpr; }
   const c = rctx;
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -598,7 +604,7 @@ function drawRadarOverlay(time) {
   const half = THREE.MathUtils.degToRad(camera.fov * camera.aspect * 0.5);
   c.fillStyle = 'rgba(255,255,255,0.18)';
   c.beginPath(); c.moveTo(px, py);
-  c.arc(px, py, 46, yaw - Math.min(half, 1.2), yaw + Math.min(half, 1.2)); c.closePath(); c.fill();
+  c.arc(px, py, W * 0.15, yaw - Math.min(half, 1.2), yaw + Math.min(half, 1.2)); c.closePath(); c.fill();
   c.fillStyle = '#fff';
   c.beginPath(); c.arc(px, py, 4, 0, Math.PI * 2); c.fill();
   const [tx, ty] = toPx(controls.target.x, controls.target.z);
@@ -664,6 +670,7 @@ function applyQuality() {
   renderer.setSize(innerWidth, innerHeight);
   cloudMat.uniforms.uStepNear.value = q.stepNear;
   cloudMat.uniforms.uMaxSteps.value = q.maxSteps;
+  cloudMat.uniforms.uLite.value = q.lite;
 }
 
 // ---------------------------------------------------------------------------
@@ -764,14 +771,19 @@ async function shareLink() {
   history.replaceState(null, '', `${location.pathname}#c=${code}`);
   const url = location.href;
   let copied = false;
-  try { await navigator.clipboard.writeText(url); copied = true; } catch { /* нет доступа к буферу — покажем поле */ }
-  ui.showShare(url, copied);
+  try { await navigator.clipboard.writeText(url); copied = true; } catch { /* нет доступа к Clipboard API */ }
+  copied = ui.showShare(url, copied);
 }
 
 function applyConfig(c) {
   const keys = ['tileKm', 'grid', 'blendKm', 'seed', 'resH', 'resV', 'slabMode', 'wind', 'windSpeed', 'windFrom', 'develop',
     'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality'];
   for (const k of keys) state[k] = c[k];
+  if (MOBILE) {                                   // ссылку с десктопа ужимаем до возможностей телефона
+    state.quality = 'low';
+    state.resH = Math.min(state.resH, MOBILE_RES.resH);
+    state.resV = Math.min(state.resV, MOBILE_RES.resV);
+  }
   state.zones = c.zones.map((z) => ({ layers: z.layers.map(({ type, ...over }) => makeLayer(type, over)) }));
   state.zones.forEach((z) => enforceNonOverlap(z.layers));
   state.sel = c.sel;
@@ -853,18 +865,21 @@ renderer.setAnimationLoop((time) => {
   renderer.setViewport(0, 0, innerWidth, innerHeight);
   renderer.render(scene, camera);
 
-  // миникарта радара в правом нижнем углу
-  const [vx, vz, side] = radarView();
-  radar.mat.uniforms.uView.value.set(vx, vz, side, 0);
-  renderer.autoClear = false;
-  renderer.setScissorTest(true);
-  const x = innerWidth - RADAR_PX - RADAR_RIGHT;
-  renderer.setScissor(x, RADAR_BOTTOM, RADAR_PX, RADAR_PX);
-  renderer.setViewport(x, RADAR_BOTTOM, RADAR_PX, RADAR_PX);
-  renderer.render(radar.scene, fsCam);
-  renderer.setScissorTest(false);
-  renderer.autoClear = true;
-  drawRadarOverlay(time);
+  // миникарта радара: место и размер — из CSS; свёрнутую не рисуем
+  const rr = radarCanvas.getBoundingClientRect();
+  if (rr.width > 0) {
+    const [vx, vz, side] = radarView();
+    radar.mat.uniforms.uView.value.set(vx, vz, side, 0);
+    const vy = innerHeight - rr.bottom;
+    renderer.autoClear = false;
+    renderer.setScissorTest(true);
+    renderer.setScissor(rr.left, vy, rr.width, rr.height);
+    renderer.setViewport(rr.left, vy, rr.width, rr.height);
+    renderer.render(radar.scene, fsCam);
+    renderer.setScissorTest(false);
+    renderer.autoClear = true;
+    drawRadarOverlay(time);
+  }
 
   const alt = (camera.position.y * 1000).toFixed(0);
   const mm = Math.floor(anim.t / 60), ss = Math.floor(anim.t % 60);

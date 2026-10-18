@@ -201,8 +201,8 @@ float coverMask(float w, float cov) { return cov > .99 ? 1. : smoothstep(1. - co
 float wfield(vec2 q) { return clamp((fbm2(q, 5) - .5) * 2.4 + .5, 0., 1.); }
 // то же с эволюцией во времени (третья координата шума — время в долях жизни облака)
 float wfieldT(vec2 q, float life) {
-  if (uDev <= 0.) return wfield(q);
-  return clamp((fbm3(vec3(q, uTime / life), 5) - .5) * 2.4 + .5, 0., 1.);
+  float f = uDev > 0. ? fbm3(vec3(q, uTime / life), 5) : fbm2(q, 5);
+  return clamp((f - .5) * 2.4 + .5, 0., 1.);
 }
 
 // Радиус облака (в долях R) на относительной высоте h, <0 — вне облака
@@ -468,6 +468,7 @@ uniform float uBoil;          // подъём турбулентности пр�
 uniform vec3 uBoxMin, uBoxMax, uSunDir, uSunColor, uAmbTop, uAmbBottom, uHazeColor;
 uniform float uExt, uDensMul, uStepNear, uStepGrow, uLightStep, uHazeBeta, uExposure;
 uniform int uMaxSteps;
+uniform float uLite;          // 1 — облегчённое освещение (телефоны, качество «низкое»)
 varying vec3 vWorld;
 ${common}
 ${volume}
@@ -482,7 +483,7 @@ float erodeD(vec2 v, vec3 p, float t, float fade) {
   dp += vec3(cn.x, cn.y, cn.x - cn.y) * mix(1.1, .45, v.y);
   vec2 n1 = textureLod(uDetail, dp, 0.).rg;
   float e = mix(n1.g, 1. - n1.r, v.y);
-  float near = 1. - smoothstep(2., 9., t);
+  float near = uLite > .5 ? 0. : 1. - smoothstep(2., 9., t);
   if (near > 0.) {
     vec2 n2 = textureLod(uDetail, dp * 3.7 + .37, 0.).rg;
     e = mix(e, e * .6 + mix(n2.g, 1. - n2.r, v.y) * .4, near);
@@ -530,7 +531,10 @@ void main() {
     // оптическая толща до солнца
     float ld = 0., ls = uLightStep;
     vec3 lp = p;
+    int nl = uLite > .5 ? 4 : 6;
+    if (uLite > .5) ls *= 1.6;                            // меньше выборок — те же ~2 км до солнца
     for (int j = 0; j < 6; j++) {
+      if (j >= nl) break;
       lp += uSunDir * ls * .5;
       // ближние выборки — с эрозией: мелкие клубы отбрасывают тени друг на друга
       ld += (j < 3 && fade > 0. ? erodeD(D2(lp), lp, t, fade) : D(lp)) * ls;
@@ -552,8 +556,11 @@ void main() {
     float up = D(p + vec3(0., .2, 0.)) + 2. * D(p + vec3(0., .6, 0.));
     float ao = exp(-up * uDensMul * uExt * .08);
     // боковая затенённость: впадины между клубами и между "мешками" mammatus видят меньше неба у горизонта
-    float lat = D(p + vec3(.25, -.05, 0.)) + D(p + vec3(-.25, -.05, 0.)) + D(p + vec3(0., -.05, .25)) + D(p + vec3(0., -.05, -.25));
-    float open = exp(-lat * .25 * uDensMul * uExt * .04);
+    float open = 1.;
+    if (uLite < .5) {
+      float lat = D(p + vec3(.25, -.05, 0.)) + D(p + vec3(-.25, -.05, 0.)) + D(p + vec3(0., -.05, .25)) + D(p + vec3(0., -.05, -.25));
+      open = exp(-lat * .25 * uDensMul * uExt * .04);
+    }
     vec3 S = uSunColor * sun + mix(uAmbBottom, uAmbTop, ao) * mix(.6, 1., powder) * mix(.35, 1., open);
 
     float Ts = exp(-sigma * dt);

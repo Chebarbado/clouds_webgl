@@ -2,7 +2,8 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e141e">
   <title>Volumetric Clouds MVP</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
@@ -116,7 +117,7 @@
 
   <div id="hud"></div>
   <div id="radar">
-    <div id="radarTitle">Метеорадар · dBZ</div>
+    <button id="radarTitle" title="Свернуть / развернуть радар">Метеорадар · dBZ</button>
     <canvas id="radarOverlay"></canvas>
     <div id="legend">
       <span style="background:#04e9e7">5</span><span style="background:#019ff4">10</span><span style="background:#0300f4">15</span>
