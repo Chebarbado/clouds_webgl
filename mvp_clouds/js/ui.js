@@ -47,7 +47,9 @@ export function buildUI(ctx) {
       card.className = 'layer' + (l.enabled ? '' : ' off');
       card.innerHTML = `
         <div class="layer-head">
+          <button class="fold" title="Свернуть / развернуть">${l.collapsed ? '▸' : '▾'}</button>
           <label><input type="checkbox" ${l.enabled ? 'checked' : ''}> Слой ${idx + 1}</label>
+          <span class="sum"></span>
           <button class="del" title="Удалить слой">✕</button>
         </div>
         <select class="type">${typeOptions}</select>`;
@@ -55,7 +57,18 @@ export function buildUI(ctx) {
       sel.value = l.type;
       const top = document.createElement('div');
       top.className = 'muted';
-      const updTop = () => { top.textContent = `Верхняя граница до ${ctx.layerTop(l)} м`; };
+      // свёрнутый слой — одна строка: тип · количество · высоты
+      const sum = card.querySelector('.sum');
+      const updTop = () => {
+        top.textContent = `Верхняя граница до ${ctx.layerTop(l)} м`;
+        sum.textContent = `${CLOUD_TYPES[l.type].label.split(' (')[0]} · ${l.oktas}/8 · ${l.base}–${ctx.layerTop(l)} м`;
+      };
+      card.classList.toggle('folded', !!l.collapsed);
+      card.querySelector('.fold').addEventListener('click', () => {
+        l.collapsed = !l.collapsed;
+        card.classList.toggle('folded', l.collapsed);
+        card.querySelector('.fold').textContent = l.collapsed ? '▸' : '▾';
+      });
       const live = (key) => (v) => { l[key] = v; updTop(); ctx.onLayersChanged(); renderZones(); };
       card.append(
         slider('Нижняя граница', 0, 12000, 50, l.base, m, live('base'), settle),

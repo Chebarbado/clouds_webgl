@@ -278,7 +278,8 @@ vec2 cumulo(vec3 P, int li) {
       float over = exp(-dc * dc / (R * R) * 4.);
       H *= mix(.93 + .05 * (anvTop - .5), 1., over);
     }
-    float bc0 = Ac.x + Ac.y * .07 * hash12(c * 3.1 + seed);   // свой уровень конденсации (только выше границы слоя)
+    // уровень конденсации: свой у каждого облака (до 200 м) и плавно меняется по полю (до 120 м); только выше границы слоя
+    float bc0 = Ac.x + min(Ac.y * .15, 200.) * hash12(c * 3.1 + seed) + 120. * vnoise2((ctr + uOff) / 20000. + seed * .21);
     float h = (Pw.z - bc0) / H;
     if (h < -.02 || h > 1.) continue;
     // тело: профиль вращения
@@ -336,8 +337,9 @@ vec2 cumulo(vec3 P, int li) {
     float s = best + (bill - .45) * ampH + (fb - .5) * ampH * .9;
     float d = smoothstep(0., .3 * amp + 30., s);
     // основание: мягкий переход и лёгкая волнистость (только вверх — облако не опускается ниже слоя)
-    float bn = fbm2(P.xy / (amp * 5. + 200.) + seed * .7, 3) * (amp * .35 + 20.);
-    d *= smoothstep(0., .35 * amp + 40., P.z - bestBase - bn);
+    // основание плотное и чёткое (там резко появляются капли), с лёгкой волнистостью
+    float bn = fbm2(P.xy / (amp * 5. + 200.) + seed * .7, 3) * (amp * .12 + 10.);
+    d *= smoothstep(0., .06 * amp + 25., P.z - bestBase - bn);
     d *= B.w * (.7 + .3 * fb) * mix(1., .65, bestAnv);                    // наковальня реже и тоньше
     d *= 1. - .6 * bestDecay;                                             // распадающееся облако редеет
     if (bestAnv > 0.) {

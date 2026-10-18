@@ -36,7 +36,15 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 .layer { background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
 .layer.off { opacity: .5; }
-.layer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.layer-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.layer-head label { white-space: nowrap; }
+.layer-head .sum { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; visibility: hidden; }
+.layer-head .del { margin-left: auto; }
+.layer .fold { padding: 0 6px; background: none; border-color: transparent; color: var(--muted); }
+.layer.folded { padding: 4px 8px; }
+.layer.folded .layer-head { margin-bottom: 0; }
+.layer.folded .sum { visibility: visible; }
+.layer.folded > :not(.layer-head) { display: none; }
 .layer .del { padding: 0 6px; }
 
 .btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 6px; }

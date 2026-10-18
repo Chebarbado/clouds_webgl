@@ -6,9 +6,20 @@
   <meta name="theme-color" content="#0e141e">
   <title>Volumetric Clouds MVP</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20261018c">
+  <!-- ?v= — версия модулей: GitHub Pages кэширует файлы на 10 мин, без версии телефон смешивает старые и новые
+       модули. При изменении любого js в mvp_clouds/js меняйте версию здесь (во всех строках, в теге main.js и у style.css). -->
   <script type="importmap">
-    { "imports": { "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
+    { "imports": {
+      "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+      "./js/main.js": "./js/main.js?v=20261018c",
+      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261018c",
+      "./js/shaders.js": "./js/shaders.js?v=20261018c",
+      "./js/ui.js": "./js/ui.js?v=20261018c",
+      "./js/atmosphere.js": "./js/atmosphere.js?v=20261018c",
+      "./js/share.js": "./js/share.js?v=20261018c",
+      "./js/terrain.js": "./js/terrain.js?v=20261018c"
+    } }
   </script>
 </head>
 <body>
@@ -138,6 +149,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/main.js"></script>
+  <script type="module" src="js/main.js?v=20261018c"></script>
 </body>
 </html>
