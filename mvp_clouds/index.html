@@ -6,19 +6,19 @@
   <meta name="theme-color" content="#0e141e">
   <title>Volumetric Clouds MVP</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=20261018c">
+  <link rel="stylesheet" href="style.css?v=20261018d">
   <!-- ?v= — версия модулей: GitHub Pages кэширует файлы на 10 мин, без версии телефон смешивает старые и новые
        модули. При изменении любого js в mvp_clouds/js меняйте версию здесь (во всех строках, в теге main.js и у style.css). -->
   <script type="importmap">
     { "imports": {
       "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
-      "./js/main.js": "./js/main.js?v=20261018c",
-      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261018c",
-      "./js/shaders.js": "./js/shaders.js?v=20261018c",
-      "./js/ui.js": "./js/ui.js?v=20261018c",
-      "./js/atmosphere.js": "./js/atmosphere.js?v=20261018c",
-      "./js/share.js": "./js/share.js?v=20261018c",
-      "./js/terrain.js": "./js/terrain.js?v=20261018c"
+      "./js/main.js": "./js/main.js?v=20261018d",
+      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261018d",
+      "./js/shaders.js": "./js/shaders.js?v=20261018d",
+      "./js/ui.js": "./js/ui.js?v=20261018d",
+      "./js/atmosphere.js": "./js/atmosphere.js?v=20261018d",
+      "./js/share.js": "./js/share.js?v=20261018d",
+      "./js/terrain.js": "./js/terrain.js?v=20261018d"
     } }
   </script>
 </head>
@@ -131,6 +131,10 @@
         <option value="low">Низкое</option><option value="medium">Среднее</option><option value="high">Высокое</option>
       </select></label>
       <div id="render"></div>
+      <label>Распределение облаков<select id="clump">
+        <option value="0">Равномерно</option><option value="1">Случайно</option>
+        <option value="2">Ближе к центру</option><option value="3">Один комок</option>
+      </select></label>
       <label class="check"><input type="checkbox" id="showBox"> Показать границы объёма</label>
     </section>
   </aside>
@@ -149,6 +153,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/main.js?v=20261018c"></script>
+  <script type="module" src="js/main.js?v=20261018d"></script>
 </body>
 </html>

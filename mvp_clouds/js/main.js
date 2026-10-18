@@ -35,6 +35,7 @@ const state = {
   visibilityKm: 100, densMul: 1, ext: 45, exposure: 1.1, erode: 1.0,
   quality: MOBILE ? 'low' : 'medium', showBox: false,
   terrain: '', imagery: 's2', raiseClouds: true,   // ландшафт: '' — процедурная земля
+  clump: 1,                                         // распределение облаков: 0 равномерно, 1 случайно, 2 к центру, 3 один комок
 };
 // слои выбранной зоны — их редактирует панель
 Object.defineProperty(state, 'layers', {
@@ -217,7 +218,7 @@ const gen = fsScene(S.genFrag, {
   uZ: { value: 0 }, uOrigin: { value: new THREE.Vector2() }, uSize: { value: new THREE.Vector2() },
   uWorld: { value: new THREE.Vector2() }, uGrid: { value: new THREE.Vector2(1, 1) },
   uTile: { value: 32000 }, uBlend: { value: 8000 }, uNG: { value: 0 },
-  uOff: { value: new THREE.Vector2() }, uTime: { value: 0 }, uDev: { value: 0 },
+  uOff: { value: new THREE.Vector2() }, uTime: { value: 0 }, uDev: { value: 0 }, uClump: { value: 1 },
   uWind: { value: new THREE.Vector2(1, 0.35).normalize() },
   uGA: { value: vec4s(MAX_GROUPS * MAX_ZONES) },
   uGB: { value: vec4s(MAX_GROUPS) }, uGC: { value: vec4s(MAX_GROUPS) }, uGD: { value: vec4s(MAX_GROUPS) },
@@ -420,6 +421,7 @@ function genPass() {
   U.uOff.value.copy(set.off);
   U.uTime.value = set.t;
   U.uDev.value = state.develop ? 1 : 0;
+  U.uClump.value = state.clump;
   U.uWind.value.copy(windDir());
   const rt = set.rts[job.s];
   rt.viewport.set(tx * tileRes, ty * tileRes, tileRes, tileRes);
@@ -872,7 +874,7 @@ async function shareLink() {
 
 function applyConfig(c) {
   const keys = ['tileKm', 'grid', 'blendKm', 'seed', 'resH', 'resV', 'slabMode', 'wind', 'windSpeed', 'windFrom', 'develop',
-    'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality'];
+    'timeScale', 'sunAz', 'sunEl', 'animateSun', 'visibilityKm', 'densMul', 'ext', 'erode', 'exposure', 'quality', 'clump'];
   for (const k of keys) state[k] = c[k];
   if (MOBILE) {                                   // ссылку с десктопа ужимаем до возможностей телефона
     state.quality = 'low';

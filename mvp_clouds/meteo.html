@@ -34,6 +34,7 @@
     .key { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 6px; }
     .key span::before { content: ''; display: inline-block; width: 16px; height: 3px; margin-right: 5px; vertical-align: 3px; background: var(--c); }
     @media (max-width: 1100px) { main { grid-template-columns: 1fr; } #controls { grid-row: auto; } #mapRow { grid-column: auto; grid-template-columns: 1fr; } }
+    @media (max-width: 520px) { main { padding: 8px; gap: 8px; } .panel { padding: 8px; } #skewt { height: 460px; } }
   </style>
 </head>
 <body>
@@ -84,6 +85,14 @@
       </section>
     </div>
   </main>
-  <script type="module" src="js/meteo/demo.js"></script>
+  <!-- ?v= — версия модулей против кэша GitHub Pages (как в index.html); меняйте вместе с ней -->
+  <script type="importmap">
+    { "imports": {
+      "./js/meteo/demo.js": "./js/meteo/demo.js?v=20261018d",
+      "./js/meteo/model.js": "./js/meteo/model.js?v=20261018d",
+      "./js/cloudTypes.js": "./js/cloudTypes.js?v=20261018d"
+    } }
+  </script>
+  <script type="module" src="js/meteo/demo.js?v=20261018d"></script>
 </body>
 </html>

@@ -74,9 +74,13 @@ function skewT(res) {
   const cv = $('skewt'), ctx = cv.getContext('2d');
   const dpr = devicePixelRatio, W = cv.clientWidth, H = cv.clientHeight;
   cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const L = 44, R = W - 150, T = 10, B = H - 26, PW = R - L, PH = B - T;
+  // узкий экран (телефон): компактная правая колонка, мельче шрифт
+  const narrow = W < 520;
+  const L = narrow ? 34 : 44, R = W - (narrow ? 84 : 150), T = 10, B = H - 26, PW = R - L, PH = B - T;
   const yOf = (p) => B - (PH * (Math.log(P_BOT) - Math.log(p))) / (Math.log(P_BOT) - Math.log(P_TOP));
-  const xOf = (Tc, p) => L + ((Tc + 40) / 80) * PW + (B - yOf(p)) * 0.9;
+  // наклон изотерм — от пропорций графика: на узком графике линии не уходят за правый край
+  const skew = 0.9 * Math.min(1, PW / (PH * 0.9));
+  const xOf = (Tc, p) => L + ((Tc + 40) / 80) * PW + (B - yOf(p)) * skew;
   ctx.fillStyle = '#0d1420'; ctx.fillRect(0, 0, W, H);
   ctx.save(); ctx.beginPath(); ctx.rect(L, T, PW, PH); ctx.clip();
   // сухие адиабаты
@@ -119,13 +123,14 @@ function skewT(res) {
   ctx.stroke(); ctx.setLineDash([]);
   ctx.restore();
   // оси
-  ctx.fillStyle = '#8fa0b5'; ctx.font = '11px system-ui'; ctx.strokeStyle = 'rgba(255,255,255,.25)';
+  ctx.fillStyle = '#8fa0b5'; ctx.font = narrow ? '10px system-ui' : '11px system-ui'; ctx.strokeStyle = 'rgba(255,255,255,.25)';
   for (const p of [1000, 900, 800, 700, 600, 500, 400, 300, 200]) {
     const y = yOf(p); ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(R, y); ctx.stroke();
     let i = 0; while (i < prof.n - 1 && prof.p[i] / 100 > p) i++;
-    ctx.fillText(`${p}`, 6, y + 4); ctx.fillText(`${(prof.z[i] / 1000).toFixed(1)} км`, R + 4, y + 4);
+    ctx.fillText(`${p}`, narrow ? 3 : 6, y + 4); ctx.fillText(`${(prof.z[i] / 1000).toFixed(1)} км`, R + 4, y + 4);
   }
-  for (let t = -30; t <= 40; t += 10) ctx.fillText(`${t}°`, xOf(t, P_BOT) - 8, B + 16);
+  const tStep = PW < 300 ? 20 : 10;                      // подписи температуры не налезают друг на друга
+  for (let t = -40; t <= 40; t += tStep) { const x = xOf(t, P_BOT); if (x >= L && x <= R) ctx.fillText(`${t}°`, x - 8, B + 16); }
   ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.strokeRect(L, T, PW, PH);
   // уровни
   const mark = (z, label, color) => {
@@ -138,17 +143,22 @@ function skewT(res) {
   if (res.diag.lfc !== res.diag.lcl) mark(res.diag.lfc, `LFC ${res.diag.lfc} м`, '#ffa94d');
   if (res.diag.el && res.diag.el > (res.diag.lcl ?? 0)) mark(res.diag.el, `EL ${res.diag.el} м`, '#ff6b6b');
   // слои облаков справа
-  const bx = R + 50;
+  const bx = R + (narrow ? 42 : 50), bw = narrow ? 14 : 22;
   for (const l of res.layers) {
     const top = l.base + l.minT + l.range;
     const y0 = yOf(pz(l.base)), y1 = yOf(pz(Math.min(top, 15900)));
     ctx.fillStyle = TYPE_COLOR[l.type] ?? '#ccc';
     ctx.globalAlpha = 0.35 + 0.65 * (l.oktas / 8);
-    ctx.fillRect(bx, y1, 22, Math.max(y0 - y1, 3));
+    ctx.fillRect(bx, y1, bw, Math.max(y0 - y1, 3));
     ctx.globalAlpha = 1;
-    ctx.fillStyle = '#e6edf5'; ctx.fillText(shortName(l.type).replace('Cumulonimbus', 'Cb').replace('Cumulus', 'Cu'), bx + 26, (y0 + y1) / 2 + 4);
+    ctx.fillStyle = '#e6edf5';
+    const name = shortName(l.type).replace('Cumulonimbus', 'Cb').replace('Cumulus', 'Cu');
+    if (narrow) {                                        // на узком экране — подпись вертикально вдоль полосы
+      ctx.save(); ctx.translate(bx + bw + 12, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'center'; ctx.fillText(name, 0, 0); ctx.restore();
+    } else ctx.fillText(name, bx + bw + 4, (y0 + y1) / 2 + 4);
   }
-  ctx.fillStyle = '#8fa0b5'; ctx.fillText('облака', bx, T + 10);
+  ctx.fillStyle = '#8fa0b5'; ctx.fillText(narrow ? 'обл.' : 'облака', bx, T + 10);
 }
 
 // ------------------------------------------------------------------ результаты

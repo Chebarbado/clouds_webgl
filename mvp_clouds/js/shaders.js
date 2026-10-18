@@ -179,6 +179,15 @@ uniform vec4 uGZ[8];              // (zmin, zmax, время жизни обла
 uniform vec2 uOff;                // снос ветром к моменту кадра, м (облака считаются в сносимой системе координат)
 uniform float uTime;              // время кадра, с
 uniform float uDev;               // 1 — развитие облаков включено
+uniform float uClump;             // распределение: 0 — равномерно, 1 — случайно, 2 — ближе к центру, 3 — один комок
+
+// Множитель покрытия от распределения в точке мира xy (м): к центру — плавный спад к краям,
+// один комок — облака только в круге ~40% от размера мира
+float clumpK(vec2 xy) {
+  if (uClump < 1.5) return 1.;
+  float d = length(xy - uWorld * .5) / (.5 * min(uWorld.x, uWorld.y));
+  return uClump < 2.5 ? 1.9 * exp(-d * d * 2.2) : 3.2 * (1. - smoothstep(.3, .5, d));
+}
 ${noise}
 
 // Высоты и покрытие группы g в горизонтальной точке xy: билинейная смесь 2×2 ближайших зон,
@@ -247,8 +256,10 @@ vec2 cumulo(vec3 P, int li) {
   for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
     vec2 c = gi + vec2(float(i), float(j));
     vec4 r = hash42(c + seed);
-    vec2 ctr = (c + .1 + .8 * r.xy) * G;
-    float wm = vnoise2(ctr / (G * 3.5) + seed * .13);          // крупномасштабная кластеризация
+    // равномерно — почти правильная сетка без скоплений; иначе — случайный разброс с кластеризацией
+    float jit = uClump < .5 ? .25 : .8;
+    vec2 ctr = (c + .5 - .5 * jit + jit * r.xy) * G;
+    float wm = uClump < .5 ? .55 : vnoise2(ctr / (G * 3.5) + seed * .13);
     float rows = 1.;
     if (D.w > 0.) {                                             // гряды поперёк ветра
       float s = .5 + .5 * sin(dot(ctr, uWind) / (G * 1.5) * 6.2831853);
@@ -257,7 +268,7 @@ vec2 cumulo(vec3 P, int li) {
     // параметры зон — в центре ячейки: в зоне перехода облако целиком есть или нет, а не режется
     vec4 Ac = blendA(li, ctr);
     // мягкое присутствие: у порога покрытия облако маленькое, а не исчезает скачком (важно при сносе через зоны)
-    float grow = smoothstep(-.06, .06, Ac.w * 1.25 * (.45 + 1.1 * wm) * rows - r.z);
+    float grow = smoothstep(-.06, .06, Ac.w * clumpK(ctr + uOff) * 1.25 * (.45 + 1.1 * wm) * rows - r.z);
     if (grow <= 0.) continue;                                    // ячейка пустая
     // жизненный цикл: зарождение → рост вверх и вширь → зрелость → распад; фаза у каждой ячейки своя
     float decay = 0.;
@@ -370,7 +381,7 @@ vec2 sheet(vec3 P, int li) {
   float rag = D.z * A.y, wave = F.w * A.y;
   if (P.z < base - rag - wave - 1. || P.z > base + A.y + A.z + 1.) return vec2(0.);
   vec2 q = P.xy / B.y + seed * .21;
-  float mask = coverMask(wfieldT(q, uGZ[li].z), cov);
+  float mask = coverMask(wfieldT(q, uGZ[li].z), min(cov * clumpK(P.xy + uOff), 1.));
   if (mask <= .001) return vec2(0.);
   float tn = fbm2(q * 2.3 + 7.7, 4);
   float thick = E.z > .5 ? A.y + A.z * (.45 + .1 * tn) : (A.y + A.z * tn) * mix(.35, 1., sqrt(mask));
@@ -397,7 +408,7 @@ vec2 cirrus(vec3 P, int li) {
   q.y += 1.4 * fbm3(q * vec3(.6, .25, .8) + 3.1, 3);
   q.x += .5 * fbm3(q * vec3(1., .5, 1.) + 9.2, 2);
   float n = fbm3(q, 5);
-  float mask = coverMask(wfieldT(P.xy / B.y + seed * .3, uGZ[li].z), cov);
+  float mask = coverMask(wfieldT(P.xy / B.y + seed * .3, uGZ[li].z), min(cov * clumpK(P.xy + uOff), 1.));
   float thick = A.y + A.z * fbm2(P.xy / 6000. + 4.2, 3);
   float hz = (P.z - base) / thick;
   float v = smoothstep(0., .2, hz) * (1. - smoothstep(.65, 1., hz));

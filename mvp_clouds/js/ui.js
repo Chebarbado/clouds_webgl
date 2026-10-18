@@ -214,6 +214,9 @@ export function buildUI(ctx) {
   const rExp = slider('Экспозиция', 0.3, 3, 0.05, state.exposure, (v) => v.toFixed(2), (v) => { state.exposure = v; ctx.onAtmosphereChanged(); });
   renEl.append(rDens, rExt, rEro, rExp);
   $('showBox').addEventListener('change', (e) => { state.showBox = e.target.checked; ctx.onRenderChanged(); });
+  const clumpSel = $('clump');
+  clumpSel.value = String(state.clump);
+  clumpSel.addEventListener('change', () => { state.clump = +clumpSel.value; ctx.onVolumeChanged(); });
 
   $('togglePanel').addEventListener('click', () => document.body.classList.toggle('panel-hidden'));
   $('radarTitle').addEventListener('click', () => document.body.classList.toggle('radar-hidden'));
@@ -245,6 +248,7 @@ export function buildUI(ctx) {
       rDens.set(state.densMul); rExt.set(state.ext); rEro.set(state.erode); rExp.set(state.exposure);
       syncDynamics();
       terrSel.value = state.terrain; imgSel.value = state.imagery;
+      clumpSel.value = String(state.clump);
     },
     setTerrainStatus(t) { $('terrStatus').textContent = t; },
     showShare(url, copied) {
