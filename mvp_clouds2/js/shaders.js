@@ -340,10 +340,10 @@ vec2 cumulo(vec3 P, int li) {
   vec2 res = vec2(0.);
   float fb = fbm3(P / (D.y * 1.9) + seed * 1.7, 3);
   if (best > -amp * 1.6) {
-    // клубы трёх масштабов: крупные доли, средние и мелкие "цветная капуста"
+    // клубы четырёх масштабов (#87, #89): доли облака → средние выпуклости → клубы → мелкая «цветная капуста»
     vec3 q = Pw / D.y + seed;
-    float bill = 1. - (.55 * worley3(q) + .3 * worley3(q * 2.17 + 11.3) + .15 * worley3(q * 4.63 + 3.1));
-    float ampH = amp * mix(.45, 1.15, clamp(bestH, 0., 1.));
+    float bill = 1. - (.34 * worley3(q * .45 + 5.7) + .33 * worley3(q) + .21 * worley3(q * 2.17 + 11.3) + .12 * worley3(q * 4.63 + 3.1));
+    float ampH = amp * 1.3 * mix(.45, 1.15, clamp(bestH, 0., 1.));
     ampH *= mix(1., .3, E.y * smoothstep(.55, 1., bestH));
     float s = best + (bill - .45) * ampH + (fb - .5) * ampH * .9;
     float d = smoothstep(0., .3 * amp + 30., s);
@@ -369,7 +369,7 @@ vec2 cumulo(vec3 P, int li) {
     float top = base + A.y * .55 * (.7 + .6 * fb);
     float v = smoothstep(base, base + 50., P.z) * (1. - smoothstep(top - 80., top, P.z));
     float dd = v * m * F.w * B.w * .85;
-    if (dd > res.x) res = vec2(dd, mix(F.z, F.y, .5));
+    if (dd > res.x) res = vec2(dd, F.y);                 // верх палубы Sc клубится
   }
   return res;
 }
@@ -493,19 +493,33 @@ ${volume}
 float D(vec3 p) { return volD(p); }
 vec2 D2(vec3 p) { return volRG(p); }
 // плотность с эрозией краёв детализирующим шумом (Schneider): клубы при bill=1, волокна при bill=0
+float gCrev = 1.;   // последняя выборка клубов: 0 — щель между клубами, 1 — макушка клуба
 float erodeD(vec2 v, vec3 p, float t, float fade) {
   vec3 dp = (p - vec3(uDetailShift.x, uBoil * v.y, uDetailShift.y)) / uDetailScale;
-  // завихрение координат низкочастотным шумом: турбулентные, а не "пузырчатые" края; сильнее у волокон
-  vec2 cn = textureLod(uDetail, dp * .21 + .13, 0.).rg - .5;
-  dp += vec3(cn.x, cn.y, cn.x - cn.y) * mix(1.1, .45, v.y);
-  vec2 n1 = textureLod(uDetail, dp, 0.).rg;
-  float e = mix(n1.g, 1. - n1.r, v.y);
-  float near = uLite > .5 ? 0. : 1. - smoothstep(2., 9., t);
-  if (near > 0.) {
-    vec2 n2 = textureLod(uDetail, dp * 3.7 + .37, 0.).rg;
-    e = mix(e, e * .6 + mix(n2.g, 1. - n2.r, v.y) * .4, near);
+  // завихрение — только у волокнистых краёв (наковальня, низ, слоистые, перистые): клубы остаются округлыми,
+  // иначе их растягивает в «мех»
+  float wisp = 1. - smoothstep(.2, .55, v.y);
+  if (wisp > .02) {
+    vec2 cn = textureLod(uDetail, dp * .21 + .13, 0.).rg - .5;
+    dp += vec3(cn.x, cn.y, cn.x - cn.y) * 1.1 * wisp;
   }
-  float m = fade * e * .6;
+  // октавы (#87): ~150 м, ~55 м, ~20 м внутри тайла 0.6 км; мелкие гаснут с расстоянием (LOD по размеру пикселя)
+  vec2 n = textureLod(uDetail, dp, 0.).rg;
+  float bill = n.r, wis = n.g, ws = 1.;
+  float o2 = uLite > .5 ? 0. : 1. - smoothstep(3., 14., t);
+  if (o2 > 0.) {
+    vec2 n2 = textureLod(uDetail, dp * 2.71 + .37, 0.).rg;
+    bill += .55 * o2 * n2.r; wis += .55 * o2 * n2.g; ws += .55 * o2;
+    float o3 = 1. - smoothstep(.8, 4., t);
+    if (o3 > 0.) {
+      vec2 n3 = textureLod(uDetail, dp * 7.31 + .71, 0.).rg;
+      bill += .3 * o3 * n3.r; wis += .3 * o3 * n3.g; ws += .3 * o3;
+    }
+  }
+  bill /= ws; wis /= ws;
+  gCrev = bill;
+  float e = mix(wis, 1. - bill, v.y);
+  float m = fade * e * .7;
   return clamp((v.x - m) / max(1. - m, .05), 0., 1.);
 }
 // фазовая функция: узкий пик вперёд (серебристая кайма), основной лобус и обратное рассеяние
@@ -542,9 +556,23 @@ void main() {
 
     // эрозия краёв: клубы сверху у кучевых, волокна снизу, у наковальни и перистых
     float fade = uErode * mix(1., .35, smoothstep(6., 40., t));
+    float crev = 1.;
     if (fade > 0.) {
       d = erodeD(v, p, t, fade);
+      crev = gCrev;
       if (d < .004) { t += dt; continue; }
+    }
+    // у кромки облака — нормаль по градиенту плотности: макушки, обращённые к небу и солнцу, светлее,
+    // щели между клубами темнее; так выпуклости читаются формой, как на фото
+    float surf = 0.;
+    vec3 nrm = vec3(0., 1., 0.);
+    if (uLite < .5) {
+      surf = (1. - smoothstep(.12, .6, d)) * (1. - smoothstep(4., 30., t));
+      if (surf > 0.) {
+        const float h = .06;
+        vec3 g = vec3(D(p + vec3(h, 0., 0.)), D(p + vec3(0., h, 0.)), D(p + vec3(0., 0., h))) - v.x;
+        nrm = -g / max(length(g), 1e-4);
+      }
     }
     d *= uDensMul;
     float sigma = d * uExt;
@@ -573,6 +601,8 @@ void main() {
     // powder: края с малой плотностью рассеивают меньше — тёмные впадины между клубами
     float powder = 1. - exp(-sigma * .25);
     sun *= mix(1., powder, .8 * awayFromSun);
+    float ndl = dot(nrm, uSunDir);
+    sun *= mix(1., (.3 + .7 * smoothstep(-.4, .6, ndl)) * mix(.55, 1., crev), surf * .85);
     // окружающий свет неба, затенённый облаком сверху
     float up = D(p + vec3(0., .2, 0.)) + 2. * D(p + vec3(0., .6, 0.));
     float ao = exp(-up * uDensMul * uExt * .08);
@@ -582,7 +612,8 @@ void main() {
       float lat = D(p + vec3(.25, -.05, 0.)) + D(p + vec3(-.25, -.05, 0.)) + D(p + vec3(0., -.05, .25)) + D(p + vec3(0., -.05, -.25));
       open = exp(-lat * .25 * uDensMul * uExt * .04);
     }
-    vec3 S = uSunColor * sun + mix(uAmbBottom, uAmbTop, ao) * mix(.6, 1., powder) * mix(.35, 1., open);
+    float skyView = mix(1., (.4 + .6 * (.5 + .5 * nrm.y)) * mix(.4, 1., crev), surf);   // щель видит меньше неба
+    vec3 S = uSunColor * sun + mix(uAmbBottom, uAmbTop, ao) * mix(.6, 1., powder) * mix(.35, 1., open) * skyView;
 
     float Ts = exp(-sigma * dt);
     float w = T * (1. - Ts);

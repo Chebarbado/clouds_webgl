@@ -10,3 +10,7 @@ GOAL.md
 TASKS.md
 TESTING.md
 __pycache__/
+~$*
+mvp_clouds2/test/node_modules/
+mvp_clouds2/test/shots/
+mvp_clouds2/test/report/
