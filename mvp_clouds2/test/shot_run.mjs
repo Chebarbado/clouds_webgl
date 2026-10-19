@@ -102,6 +102,7 @@ const summary = {
   results,
 };
 writeFileSync(new URL('./shots/report.json', import.meta.url), JSON.stringify(summary, null, 1) + '\n');
+await import('./report.mjs');                          // HTML-отчёт стенда (#77)
 console.log(`\nИтог: ${summary.passed}/${summary.total} кадров, худшая готовность ${summary.maxReadyMs} мс`);
 console.log(fail ? `FAIL: ${fail} кадров` : 'OK: все кадры детерминированы и готовы <5 с');
 process.exit(fail ? 1 : 0);

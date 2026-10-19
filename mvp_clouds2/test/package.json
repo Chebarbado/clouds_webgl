@@ -3,6 +3,12 @@
   "private": true,
   "type": "module",
   "description": "Стенд mvp_clouds2: снимки эталонных кадров, метрики, отчёт (E0, #76–#78)",
+  "scripts": {
+    "stand": "node shot_run.mjs && node adverse_run.mjs",
+    "shot": "node shot_run.mjs",
+    "report": "node report.mjs",
+    "adverse": "node adverse_run.mjs"
+  },
   "dependencies": {
     "puppeteer-core": "^24.43.1"
   }
