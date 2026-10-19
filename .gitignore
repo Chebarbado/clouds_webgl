@@ -7,8 +7,6 @@
 /images/2.bmp
 /images/cool_*.png
 GOAL.md
-TASKS.md
-TESTING.md
 __pycache__/
 ~$*
 mvp_clouds2/test/node_modules/
