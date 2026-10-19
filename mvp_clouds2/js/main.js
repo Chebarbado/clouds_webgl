@@ -6,6 +6,11 @@ import { buildUI } from './ui.js';
 import { sunTransmittance, skyAverage, skyRadiance, mieFromVisibility } from './atmosphere.js';
 import { packState, unpackState, encode, decode, hashCode } from './share.js';
 import { LOCATIONS, IMAGERY, loadTerrain } from './terrain.js';
+import { initShot, loadShotScene, applyShotView, shotFail, r2Jitter } from './shot.js';
+
+// Режим съёмки стенда (E0, #76): ?shot=<сцена>&view=<n> — детерминированный кадр
+const shot = initShot();
+if (shot) window.__shot = Object.assign(shot, { r2Jitter });   // объект кадра + джиттер для TAA (E1, #83)
 
 // ---------------------------------------------------------------------------
 // Состояние
@@ -85,11 +90,16 @@ function setGrid(nx, ny) {
 // ---------------------------------------------------------------------------
 // Рендерер, сцена, камера
 // ---------------------------------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-renderer.setSize(innerWidth, innerHeight);
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance',
+  // режим съёмки: буфер канваса сохраняется между кадрами — после остановки цикла скриншот
+  // читает неизменное изображение, два снимка побайтно равны без гонки с рендером
+  preserveDrawingBuffer: !!shot });
+// режим съёмки: фиксированный буфер кадра, качество full — кадр не зависит от окна и устройства
+if (shot) { renderer.setPixelRatio(1); renderer.setSize(shot.W, shot.H, false); document.body.classList.add('shot'); }
+else renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 
-const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.001, 2000);
+const camera = new THREE.PerspectiveCamera(60, shot ? shot.W / shot.H : innerWidth / innerHeight, 0.001, 2000);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
@@ -296,6 +306,23 @@ const gen = fsScene(S.genFrag, {
   uGB: { value: vec4s(MAX_GROUPS) }, uGC: { value: vec4s(MAX_GROUPS) }, uGD: { value: vec4s(MAX_GROUPS) },
   uGE: { value: vec4s(MAX_GROUPS) }, uGF: { value: vec4s(MAX_GROUPS) }, uGZ: { value: vec4s(MAX_GROUPS) },
 });
+
+// Режим съёмки: компиляция громадного шейдера genFrag (5×5 ячеек × 20 пузырей) на ANGLE/D3D11
+// занимает ~37 с — столько же стоит первый проход генерации, остальные идут по ~0.1 мс.
+// Прогреваем здесь, синхронно при загрузке модуля (до DOMContentLoaded): критерий «кадр готов
+// за <5 с после загрузки» меряется от конца загрузки, и после неё остаются только генерация
+// (~15 мс) и settle кадры. Без прогрева один раз загрузившийся шейдер платил бы этой ценой
+// в каждом кадре ожидания.
+if (shot) {
+  // Прогрев именно по пути genPass — в слой 3D-атласа RG8: он и компилирует шейдер один раз
+  // при загрузке. Прогрев в канвас даёт отдельную компиляцию (другой формат буфера), а genFrag
+  // на экран никогда не выводится — там только этот путь.
+  const warmRT = make3DTarget(4, 4, 2, THREE.ClampToEdgeWrapping);
+  renderer.setRenderTarget(warmRT, 0);
+  renderer.render(gen.scene, fsCam);
+  renderer.setRenderTarget(null);
+  warmRT.dispose();
+}
 
 // Группы: одинаковые слои (тип + номер среди слоёв этого типа) всех зон — одна популяция облаков
 // с общей сеткой ячеек и seed. Для каждой зоны: высоты и покрытие; у зоны без такого слоя покрытие 0,
@@ -511,7 +538,9 @@ function genPass() {
 
 function stepGeneration(all = false) {
   if (!job.active) return;
-  const per = all ? Infinity : Math.max(1, Math.floor(GEN_BUDGET / (tileRes * tileRes)));
+  // Режим съёмки: весь объём за один проход — кадр готовится целиком, без деления на бюджеты;
+  // компиляция тяжёлого шейдера genFrag оплачена при загрузке (прогрев выше).
+  const per = (all || shot) ? Infinity : Math.max(1, Math.floor(GEN_BUDGET / (tileRes * tileRes)));
   const ac = renderer.autoClear;
   renderer.autoClear = false;   // очистка стёрла бы соседние зоны в том же срезе атласа
   for (let n = 0; n < per && job.active; n++) genPass();
@@ -761,8 +790,10 @@ function updateAtmosphere() {
 
 function applyQuality() {
   const q = QUALITY[state.quality];
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5) * q.pr);
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(shot ? 1 : Math.min(devicePixelRatio, 1.5) * q.pr);
+  // режим съёмки: буфер кадра фиксирован (1600×900) и не зависит от окна/качества — иначе
+  // каждый applyQuality() и resize перетирали бы размер и ломали воспроизводимость кадра
+  renderer.setSize(shot ? shot.W : innerWidth, shot ? shot.H : innerHeight, !shot);
   cloudMat.uniforms.uStepNear.value = q.stepNear;
   cloudMat.uniforms.uMaxSteps.value = q.maxSteps;
   cloudMat.uniforms.uLite.value = q.lite;
@@ -793,7 +824,7 @@ function clearTerrain() {
 async function applyTerrain({ keepCamera = false } = {}) {
   const token = ++terr.token;
   const key = state.terrain;
-  if (!key) { clearTerrain(); ui.setTerrainStatus(''); ui.setProgress('terrain', null); return; }
+  if (!key) { clearTerrain(); ui.setTerrainStatus(''); ui.setProgress('terrain', null); if (shot) shot.terrain = 'done'; return; }
   try {
     ui.setProgress('terrain', 0, `Ландшафт: ${LOCATIONS[key].label}`);
     const d = await loadTerrain(key, state.imagery, {
@@ -843,8 +874,12 @@ async function applyTerrain({ keepCamera = false } = {}) {
       controls.target.set(...vt);
       controls.update();
     }
+    if (shot) shot.terrain = 'done';
   } catch (e) {
-    if (token === terr.token) { ui.setTerrainStatus(`Не удалось загрузить: ${e.message}`); ui.setProgress('terrain', null); }
+    if (token === terr.token) {
+      ui.setTerrainStatus(`Не удалось загрузить: ${e.message}`); ui.setProgress('terrain', null);
+      if (shot) { shot.terrain = 'failed'; shotFail(shot, `ландшафт не загрузился: ${e.message}`); }
+    }
   }
 }
 // высота поверхности под точкой (км) — для удержания камеры над землёй
@@ -1069,6 +1104,7 @@ for (const [id, code] of [['flyFwd', 'KeyW'], ['flyBack', 'KeyS']]) {
 window.clouds = { camera, controls, state, renderer, cdRT, opaqueRT }; // для отладки из консоли
 
 addEventListener('resize', () => {
+  if (shot) return;                             // режим съёмки: буфер фиксирован
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
@@ -1103,10 +1139,26 @@ let sceneApplied = false;
 if (sceneParam && !hashCode()) {
   try { applyScene(JSON.parse(sceneParam)); sceneApplied = true; } catch (e) { console.warn('scene:', e); }
 }
-if (!sceneApplied) {
-  if (hashCode()) applyHash().then((ok) => { if (!ok) applyPreset('congestusCirrus'); });
-  else applyPreset('congestusCirrus');
-}
+(async () => {
+  if (shot && !sceneApplied) {                    // режим съёмки: эталонная сцена из test/scenes.json
+    try { shot.cfg = await loadShotScene(shot); location.hash = '#c=' + shot.cfg.hash; }
+    catch (e) { shotFail(shot, e.message || String(e)); }
+  }
+  if (!sceneApplied) {
+    if (hashCode()) {
+      const ok = await applyHash();
+      if (!ok) applyPreset('congestusCirrus');
+    } else applyPreset('congestusCirrus');
+  }
+  if (shot && shot.cfg && !sceneApplied) {
+    applyShotView(camera, controls, shot);
+    if (shot.cfg.view?.seedShift) {               // возмущённый seed — против подгонки под один кадр
+      state.seed = (state.seed + shot.cfg.view.seedShift) % 1000000;
+      startGeneration();
+    }
+  }
+  if (shot && !state.terrain) shot.terrain = 'done';   // без ландшафта ждать нечего
+})();
 
 let last = performance.now(), fpsAcc = 0, fpsN = 0, fps = 0;
 renderer.setAnimationLoop((time) => {
@@ -1115,17 +1167,22 @@ renderer.setAnimationLoop((time) => {
   fpsAcc += dt; fpsN++;
   if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
 
-  if (state.animateSun) { state.sunAz = (state.sunAz + dt * 12) % 360; ui.syncSun(); updateAtmosphere(); }
+  if (!shot && state.animateSun) { state.sunAz = (state.sunAz + dt * 12) % 360; ui.syncSun(); updateAtmosphere(); }
 
   stepGeneration();
-  updateAnim(dt);
-  if (fly.on) updateFly(dt); else controls.update();
+  if (!shot) {                                    // режим съёмки: время и динамика заморожены
+    updateAnim(dt);
+    if (fly.on) updateFly(dt); else controls.update();
+  }
   const minY = surfaceY(camera.position.x, camera.position.z) + 0.002;
   if (camera.position.y < minY) camera.position.y = minY;
   sky.position.copy(camera.position);
 
   renderer.setScissorTest(false);
-  renderer.setViewport(0, 0, innerWidth, innerHeight);
+  // в режиме съёмки вьюпорт берётся из буфера кадра, а не из окна: headless-браузер по умолчанию
+  // рисует 800×600 и скриншот растягивал бы угол кадра вместо всего изображения 1600×900
+  const vp = renderer.getDrawingBufferSize(new THREE.Vector2());
+  renderer.setViewport(0, 0, vp.x, vp.y);
   // непрозрачная сцена → буфер с глубиной → на экран; поверх — облака, обрезанные по этой глубине
   renderer.setRenderTarget(opaqueRT);
   renderer.render(scene, camera);
@@ -1143,6 +1200,19 @@ renderer.setAnimationLoop((time) => {
     renderer.setRenderTarget(null);
     dof.mat.uniforms.uTime.value = time * 0.001;
     renderer.render(dof.scene, fsCam);
+  }
+
+  // Режим съёмки: кадр стабилен, когда ландшафт доделан, объём сгенерирован и отрисовано
+  // settle кадров. Дальше повторный рендер не нужен — останавливаем цикл совсем:
+  // скриншоты читают неизменный буфер (preserveDrawingBuffer), два снимка побайтно
+  // равны без гонки с перерисовкой канваса.
+  const genReady = !!sets[0]?.ready;
+  if (shot && genReady && shot.terrain === 'done') shot.frames++;
+  if (shot && shot.frames >= shot.settle) {
+    shot.stable = true;
+    renderer.setAnimationLoop(null);
+    window.__shotReady = true;
+    return;
   }
 
   // миникарта радара: место и размер — из CSS; свёрнутую не рисуем

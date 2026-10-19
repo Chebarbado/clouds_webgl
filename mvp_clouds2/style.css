@@ -149,3 +149,7 @@ body.radar-hidden #radarTitle::after { content: ' ▸'; }
   body.fly #flyPad { display: flex; right: 16px; bottom: calc(148px + env(safe-area-inset-bottom)); }
   #attrib { max-width: calc(100% - 90px); left: auto; right: 8px; transform: none; bottom: calc(4px + env(safe-area-inset-bottom)); font-size: 9px; text-align: right; }
 }
+
+/* Режим съёмки стенда (E0, #76): чистый кадр 1600x900 без интерфейса */
+body.shot { margin: 0; overflow: hidden; background: #0e141e; }
+body.shot #panel, body.shot #togglePanel, body.shot #radarOverlay, body.shot #legend, body.shot #attrib, body.shot #hud, body.shot #flyFwd, body.shot #flyBack { display: none !important; }

@@ -1,0 +1,43 @@
+{
+ "version": 1,
+ "views": {
+  "0": {
+   "label": "эталон"
+  },
+  "1": {
+   "label": "+10° по курсу",
+   "yawDeg": 10
+  },
+  "2": {
+   "label": "−10° по курсу",
+   "yawDeg": -10
+  },
+  "3": {
+   "label": "+20% дистанции",
+   "dist": 1.2
+  },
+  "4": {
+   "label": "−20% дистанции, другой seed",
+   "dist": 0.8,
+   "seedShift": 101
+  }
+ },
+ "scenes": {
+  "ieta": {
+   "label": "ieta — кучевые сбоку, полдень",
+   "ref": "../../images/ieta.webp",
+   "hash": "zLY3BDcRACAN7yXseBpbkthZEFde_FJFEFvLDHlNGODY6ubDt7BNRVQtfLJEiJu_uCYQ5voUINeWWmJ2oiRRlEisZMyXegwhbeuzSNEscfz--wUgs-Wl-vSdcenvxoB87cN8"
+  },
+  "cool_1": {
+   "label": "cool_1 — поле кучевых сверху",
+   "ref": "../../images/cool_1.png",
+   "hash": "zLY3bCcRQCAV7yfcsHM3VTWoRq0j_sHg3iIiPGcvIhU0kbtjt3ImoKsMuguQ766YWniwRIveoey6FOX4LcaopS3EJNStEmcQKppgJb-pjIZZExlDTDSiOx4_XeQYWXJp3_xQu6cU3vwWvYRT9Aw"
+  },
+  "cool_2": {
+   "label": "cool_2 — перистые веером, контровое солнце",
+   "ref": "../../images/cool_2.png",
+   "hash": "zNYzbCQMxDAR7ue8J7MqP5GoxqiL9Q5DPQQix7GiWmR3XTFrDd3BPxFrLDb_FxJ3NZGY1wkHcQjRl5YmSKbEs0Qd17EHsetSHNh_iZel5u75xHWMbePBRwc-K-HMVS3AMR6HMHw",
+   "fov": 95
+  }
+ }
+}

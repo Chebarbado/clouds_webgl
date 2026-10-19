@@ -1,0 +1,9 @@
+{
+  "name": "mvp-clouds2-test",
+  "private": true,
+  "type": "module",
+  "description": "Стенд mvp_clouds2: снимки эталонных кадров, метрики, отчёт (E0, #76–#78)",
+  "dependencies": {
+    "puppeteer-core": "^24.43.1"
+  }
+}
