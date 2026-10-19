@@ -247,9 +247,15 @@ vec2 cumulo(vec3 P, int li) {
   // У основания вертикально не искажаем, чтобы дно оставалось плоским.
   vec3 wq = P / (D.y * 2.6) + seed * .9;
   vec3 warp = (vec3(fbm3(wq, 2), fbm3(wq + 5.2, 2), fbm3(wq + 9.7, 2)) - .5) * 1.8 * D.y;
-  float zf = clamp((P.z - base) / (A.y * .5 + 1.), 0., 1.);
+  float zf = clamp((P.z - base) / (A.y * .5 + 1.), .35, 1.);   // у основания вертикальный варп ослаблен, но не нулевой — дно не стрижется в идеальную плоскость
   vec3 Pw = P + vec3(warp.xy, warp.z * zf);
   float anvTop = C.w > 0. ? fbm2(P.xy / 4000. + seed * .3, 3) : 0.;     // волнистость верха наковальни
+  // уровень конденсации — волна, а не линейка: крупная (км), средняя и лопасти на масштабе клубов;
+  // срез идёт по лопастям — «подошва» сложена из тех же клубов, что и бока, а не стрижена плоскостью
+  float bamp = min(G * .08, 300.);
+  float bw = (fbm2(P.xy / (G * .5) + seed * .7, 3) - .5) * bamp
+           + (fbm2(P.xy / (G * .12) + seed * 2.3, 2) - .5) * bamp * .6
+           + ((1. - worley3(Pw / (D.y * 1.1) + seed * 7.3)) - .5) * bamp * .9;
   vec2 gi = floor(Pw.xy / G);
   float best = -1e9, bestS = -1e9, bestH = 0., bestAnv = 0., bestBase = base, bestMam = 0., bestDecay = 0.;
   for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
@@ -292,7 +298,7 @@ vec2 cumulo(vec3 P, int li) {
     // уровень конденсации: свой у каждого облака (до 200 м) и плавно меняется по полю (до 120 м); только выше границы слоя
     float bc0 = Ac.x + min(Ac.y * .15, 200.) * hash12(c * 3.1 + seed) + 120. * vnoise2((ctr + uOff) / 20000. + seed * .21);
     float h = (Pw.z - bc0) / H;
-    if (h < -.02 || h > 1.) continue;
+    if (Pw.z > bc0 + H * 1.02 || Pw.z < bc0 - bamp - H * .05) continue;   // ниже — с запасом на волну основания
     // тело: профиль вращения
     vec2 cc = ctr;
     if (C.w > 0.) cc += uWind * R * C.w * .4 * smoothstep(C.z, 1., h);   // снос наковальни ветром
@@ -330,9 +336,9 @@ vec2 cumulo(vec3 P, int li) {
         }
       }
     }
-    // сглаженное пересечение с плоскостью основания: дно плоское, но без острого ребра
-    float kb = .15 * R * vs + 20.;
-    s = -smax(-s, -(P.z - bc0) * 1.5, kb);
+    // пересечение с подошвой: мягкое, чтобы клубы-булки свисали вниз полукруглыми лопастями
+    float kb = .22 * R * vs + 40.;
+    s = -smax(-s, -(P.z - bc0 - bw) * 1.5, kb);
     best = smax(best, s, .25 * R);                                         // соседние облака сливаются в массивы
     if (s > bestS) { bestS = s; bestH = max(h, 0.); bestBase = bc0; bestMam = mam; bestDecay = decay; bestAnv = C.w > 0. ? smoothstep(C.z - .05, C.z + .1, h) * (1. - mam) : 0.; }
   }
@@ -347,10 +353,9 @@ vec2 cumulo(vec3 P, int li) {
     ampH *= mix(1., .3, E.y * smoothstep(.55, 1., bestH));
     float s = best + (bill - .45) * ampH + (fb - .5) * ampH * .9;
     float d = smoothstep(0., .3 * amp + 30., s);
-    // основание: мягкий переход и лёгкая волнистость (только вверх — облако не опускается ниже слоя)
-    // основание плотное и чёткое (там резко появляются капли), с лёгкой волнистостью
-    float bn = fbm2(P.xy / (amp * 5. + 200.) + seed * .7, 3) * (amp * .12 + 10.);
-    d *= smoothstep(0., .06 * amp + 25., P.z - bestBase - bn);
+    // основание: плотный низ, но край рваный — фейд по волне bw, а его ширина «рвётся» шумом
+    float ragged = .4 + 1.8 * fbm2(P.xy / (G * .22) + seed * 3.1, 2);
+    d *= smoothstep(0., (.2 * amp + 80.) * ragged, P.z - bestBase - bw);
     d *= B.w * (.7 + .3 * fb) * mix(1., .65, bestAnv);                    // наковальня реже и тоньше
     d *= 1. - .6 * bestDecay;                                             // распадающееся облако редеет
     if (bestAnv > 0.) {
