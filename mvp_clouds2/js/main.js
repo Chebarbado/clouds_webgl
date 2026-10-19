@@ -358,10 +358,17 @@ function buildGroups() {
       const h = best ?? { base: mBase, minT: mean('minT'), range: mean('range') };
       return { base: h.base, minT: h.minT, range: h.range, cov: 0 };
     });
-    g.zmin = Math.min(...g.zone.map((z) => z.base - (t.rag + t.wave) * z.minT));
-    g.zmax = Math.max(...g.zone.map((z) => z.base + z.minT + z.range));
-    // масштаб кучевых — по зонам, где слой есть (сетка ячеек общая для всего мира)
     g.rTyp = t.kind === 'cumulo' ? Math.max(...present.map((l) => l.minT + l.range * 0.5)) / (2 * t.aspect) : 0;
+    // Потолок/дно объёма должны перекрывать жёсткие отсечки в cumulo(): верх — bc0 + H·1.02
+    // (подъём уровня конденсации до min(minT·.15,200)+120 м плюс 2% высоты), низ — bc0 − bamp − H·.05
+    // (волна bw уводит кромку вниз до ~1.25·bamp). Иначе генератор (cull по uGZ в main) стриг
+    // верхушки и подошвы плоской поверхностью — «облако обрезано сверху».
+    const zt = Math.max(...g.zone.map((z) => z.minT + z.range));
+    const cum = t.kind === 'cumulo';
+    const bAmp = cum ? Math.min(g.rTyp * t.spacing * 0.08, 300) : 0;
+    const rise = cum ? Math.min(Math.max(...g.zone.map((z) => z.minT)) * 0.15, 200) + 120 : 0;
+    g.zmin = Math.min(...g.zone.map((z) => z.base - (t.rag + t.wave) * z.minT)) - (cum ? bAmp + 0.05 * zt + 60 : 0);
+    g.zmax = Math.max(...g.zone.map((z) => z.base + z.minT + z.range)) + (cum ? rise + 0.02 * zt + 60 : 0);
   }
   return { groups, dropped: all.length - groups.length };
 }
