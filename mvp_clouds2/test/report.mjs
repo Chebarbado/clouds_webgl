@@ -13,11 +13,14 @@ if (!existsSync(reportPath)) {
   process.exit(1);
 }
 const summary = JSON.parse(readFileSync(reportPath, 'utf8'));
-const { views, scenes } = JSON.parse(readFileSync(dir('./scenes.json'), 'utf8'));
+const { views, scenes, mask } = JSON.parse(readFileSync(dir('./scenes.json'), 'utf8'));
 
 // метрики похожести (#78) — их может не быть (шаг необязательный в shot_run.mjs)
 const metricsPath = dir('./shots/metrics.json');
 const metrics = existsSync(metricsPath) ? JSON.parse(readFileSync(metricsPath, 'utf8')) : null;
+// коридоры реальности (realset, p10–90 по 30 фото типа) — опционально
+const corrPath = dir('../../tools/clouds2_bench/realset/corridors.json');
+const corridors = existsSync(corrPath) ? JSON.parse(readFileSync(corrPath, 'utf8')) : null;
 
 // файл картинки → data URL; файла может не быть (референсы cool_* не в репозитории)
 const dataUrl = (rel) => {
@@ -46,31 +49,67 @@ function cell(r) {
   <figcaption>${badge} <span>${esc(label)}</span><small>${esc(meta)}</small></figcaption></figure>`;
 }
 
-// таблица метрик похожести сцены (#78): строка референса + по строке на ракурс
+// таблица метрик похожести сцены (#78): строка референса + по строке на ракурс.
+// Если для типа сцены есть коридор (realset: p10–90 по 30 фото) — значения
+// подсвечиваются, добавляется колонка «в коридоре» (приёмка: ≥6 из 7).
 const mnum = (v, d = 2) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
+const CORR_KEYS = [
+  ['m2', (r) => r.m2_contrast, 2],
+  ['m3', (r) => r.m3_slope, 3],
+  ['m4', (r) => r.m4_fd, 3],
+  ['m5_median', (r) => r.m5?.median, 2],
+  ['m5_p90', (r) => r.m5?.p90, 2],
+  ['m7a', (r) => r.m7?.cloud?.a_mean, 2],
+  ['m7b', (r) => r.m7?.cloud?.b_mean, 2],
+];
+
 function metricsTable(name) {
   if (!metrics) return '';
+  const type = scenes[name]?.type;
+  const bands = corridors?.types?.[type] ?? null;
   const ref = metrics.references?.[name];
   const rows = (metrics.results ?? []).filter((r) => r.scene === name);
   if (!ref && !rows.length) return '';
   const line = (label, r, isRef = false) => {
-    if (r.error) return `<tr${isRef ? ' class="refrow"' : ''}><td>${esc(label)}</td><td colspan="7">ошибка: ${esc(r.error)}</td></tr>`;
-    return `<tr${isRef ? ' class="refrow"' : ''}>
-      <td>${esc(label)}</td>
-      <td>${mnum(r.cloud_frac)}</td>
-      <td>${mnum(r.m1_emd)}</td>
-      <td>${mnum(r.m2_contrast)}</td>
-      <td>${mnum(r.m3_slope, 3)}</td>
-      <td>${mnum(r.m4_fd, 3)}</td>
-      <td>${mnum(r.m5?.median)} / ${mnum(r.m5?.p90)}</td>
-      <td>${mnum(r.m7?.cloud?.a_mean)} / ${mnum(r.m7?.cloud?.b_mean)}</td>
-    </tr>`;
+    const tr = isRef ? ' class="refrow"' : '';
+    if (r.error) return `<tr${tr}><td>${esc(label)}</td><td colspan="${9 + (bands ? 1 : 0)}">ошибка: ${esc(r.error)}</td></tr>`;
+    let inN = 0, cnt = 0;
+    const tds = CORR_KEYS.map(([k, get, d]) => {
+      const v = get(r);
+      const txt = mnum(v, d);
+      if (!bands?.[k] || v == null || Number.isNaN(v)) return `<td>${txt}</td>`;
+      cnt++;
+      const ok = v >= bands[k].p10 && v <= bands[k].p90;
+      if (ok) inN++;
+      return `<td><span class="${ok ? 'inb' : 'outb'}"`
+        + ` title="коридор ${bands[k].p10.toFixed(3)}…${bands[k].p90.toFixed(3)}">${txt}</span></td>`;
+    }).join('');
+    const score = bands ? `<td>${cnt ? `${inN}/${cnt}` : '—'}</td>` : '';
+    return `<tr${tr}><td>${esc(label)}</td><td>${mnum(r.cloud_frac)}</td>`
+      + `<td>${mnum(r.m1_emd)}</td>${tds}${score}</tr>`;
   };
   const refLine = ref ? line('референс (фото)', ref, true) : '';
+  // маски-измерители: коридор по дефолтной; если сцена меряет кадры/референс
+  // своей маской — это расхождение инструментов, вердикт помечаем
+  const mb = mask?.[name] ?? {};
+  const frameDiff = Object.entries(mb)
+    .some(([k, v]) => k !== 'ref' && v && Object.keys(v).length);
+  const refDiff = !!mb.ref;
+  const warn = bands
+    ? (frameDiff ? ' · ⚠ снимки — своей кадровой маской, вердикт индикативен' : '')
+      + (refDiff ? ' · референс — своим перекрытием маски' : '')
+    : '';
+  const corrNote = bands
+    ? ` · коридор: p10–90 по ${corridors.calib_n?.[type] ?? 30} фото типа «${esc(type)}» (realset,`
+      + ` holdout ${corridors.holdout?.[type] ? Math.round(100 * corridors.holdout[type].frac) + '% в коридоре' : '—'})`
+      + warn
+    : '';
+  const scoreHead = bands ? '<th>в коридоре</th>' : '';
   return `<table class="metrics">
-  <caption>Метрики похожести (#78) — по маске облаков, нормированы по ширине 1024 px</caption>
+  <caption>Метрики похожести (#78) — по маске облаков, нормированы по ширине 1024 px${corrNote}</caption>
   <tr><th>кадр</th><th>облако, доля</th><th>M1 EMD</th><th>M2 p95/p5</th><th>M3 наклон</th>
-      <th>M4 D границы</th><th>M5 |∇L*| p50/p90</th><th>M7 a*/b* облака</th></tr>
+      <th>M4 D границы</th><th>M5 p50</th><th>M5 p90</th>
+      <th>M7 a*</th><th>M7 b*</th>${scoreHead}</tr>
   ${refLine}
   ${rows.map((r) => line(views[r.view]?.label ?? r.view, r)).join('\n  ')}
 </table>`;
@@ -132,6 +171,7 @@ const html = `<!doctype html>
   table.metrics th:first-child, table.metrics td:first-child { text-align: left; }
   table.metrics th { color: #9fc0e8; font-weight: 600; }
   table.metrics tr.refrow td { color: #e3b341; }
+  table.metrics span.outb { color: #ff7b72; }
 </style>
 <h1>Стенд mvp_clouds2 — эталонные кадры</h1>
 <div class="sum">${verdict}<br>
