@@ -39,5 +39,30 @@
    "hash": "zNYzbCQMxDAR7ue8J7MqP5GoxqiL9Q5DPQQix7GiWmR3XTFrDd3BPxFrLDb_FxJ3NZGY1wkHcQjRl5YmSKbEs0Qd17EHsetSHNh_iZel5u75xHWMbePBRwc-K-HMVS3AMR6HMHw",
    "fov": 95
   }
+ },
+ "mask": {
+  "cool_1": {
+   "ref": {
+    "s_cloud": 0.5,
+    "v_min": 0.35,
+    "sky_s": 0.3,
+    "sky_v": 0.8
+   }
+  },
+  "cool_2": {
+   "s_cloud": 0.09,
+   "v_min": 0.75,
+   "band": [0.0, 0.6],
+   "sun_v": 0.95,
+   "sun_s": 0.05,
+   "sun_h": [35, 75],
+   "ref": {
+    "s_cloud": 0.35,
+    "v_min": 0.55,
+    "sky_s": 0.45,
+    "sun_v": 0.98,
+    "band": null
+   }
+  }
  }
 }

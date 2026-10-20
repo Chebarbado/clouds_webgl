@@ -1,9 +1,12 @@
 // Полный прогон режима съёмки (#76): 3 сцены × 5 ракурсов = 15 эталонных кадров.
 // Для каждого: открываем по ссылке, ждём __shotReady, делаем два снимка подряд и сравниваем
 // хеши (детерминизм), замеряем время готовности от конца загрузки (критерий < 5 с).
+// После снимков считаются метрики похожести на референсы (#78) → shots/metrics.json.
 // Запуск: node test/shot_run.mjs [http://localhost:8081]
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
 
 const base = process.argv[2] ?? 'http://localhost:8081';
@@ -102,6 +105,18 @@ const summary = {
   results,
 };
 writeFileSync(new URL('./shots/report.json', import.meta.url), JSON.stringify(summary, null, 1) + '\n');
+
+// шаг метрик похожести (#78): python tools/clouds2_bench/metrics.py → shots/metrics.json.
+// Необязательный: без python/scipy стенд отработает, отчёт будет без таблицы метрик.
+const py = spawnSync('python', [
+  fileURLToPath(new URL('../../tools/clouds2_bench/metrics.py', import.meta.url)),
+  '--shots', fileURLToPath(new URL('./shots/', import.meta.url)),
+  '--scenes', fileURLToPath(new URL('./scenes.json', import.meta.url)),
+], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+if (py.status === 0) console.log(py.stdout.trim());
+else console.warn('метрики не посчитаны (шаг необязательный): '
+  + (py.stderr || '').trim().split('\n').slice(-2).join(' | '));
+
 await import('./report.mjs');                          // HTML-отчёт стенда (#77)
 console.log(`\nИтог: ${summary.passed}/${summary.total} кадров, худшая готовность ${summary.maxReadyMs} мс`);
 console.log(fail ? `FAIL: ${fail} кадров` : 'OK: все кадры детерминированы и готовы <5 с');

@@ -15,6 +15,10 @@ if (!existsSync(reportPath)) {
 const summary = JSON.parse(readFileSync(reportPath, 'utf8'));
 const { views, scenes } = JSON.parse(readFileSync(dir('./scenes.json'), 'utf8'));
 
+// метрики похожести (#78) — их может не быть (шаг необязательный в shot_run.mjs)
+const metricsPath = dir('./shots/metrics.json');
+const metrics = existsSync(metricsPath) ? JSON.parse(readFileSync(metricsPath, 'utf8')) : null;
+
 // файл картинки → data URL; файла может не быть (референсы cool_* не в репозитории)
 const dataUrl = (rel) => {
   const p = dir(rel);
@@ -42,6 +46,36 @@ function cell(r) {
   <figcaption>${badge} <span>${esc(label)}</span><small>${esc(meta)}</small></figcaption></figure>`;
 }
 
+// таблица метрик похожести сцены (#78): строка референса + по строке на ракурс
+const mnum = (v, d = 2) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
+function metricsTable(name) {
+  if (!metrics) return '';
+  const ref = metrics.references?.[name];
+  const rows = (metrics.results ?? []).filter((r) => r.scene === name);
+  if (!ref && !rows.length) return '';
+  const line = (label, r, isRef = false) => {
+    if (r.error) return `<tr${isRef ? ' class="refrow"' : ''}><td>${esc(label)}</td><td colspan="7">ошибка: ${esc(r.error)}</td></tr>`;
+    return `<tr${isRef ? ' class="refrow"' : ''}>
+      <td>${esc(label)}</td>
+      <td>${mnum(r.cloud_frac)}</td>
+      <td>${mnum(r.m1_emd)}</td>
+      <td>${mnum(r.m2_contrast)}</td>
+      <td>${mnum(r.m3_slope, 3)}</td>
+      <td>${mnum(r.m4_fd, 3)}</td>
+      <td>${mnum(r.m5?.median)} / ${mnum(r.m5?.p90)}</td>
+      <td>${mnum(r.m7?.cloud?.a_mean)} / ${mnum(r.m7?.cloud?.b_mean)}</td>
+    </tr>`;
+  };
+  const refLine = ref ? line('референс (фото)', ref, true) : '';
+  return `<table class="metrics">
+  <caption>Метрики похожести (#78) — по маске облаков, нормированы по ширине 1024 px</caption>
+  <tr><th>кадр</th><th>облако, доля</th><th>M1 EMD</th><th>M2 p95/p5</th><th>M3 наклон</th>
+      <th>M4 D границы</th><th>M5 |∇L*| p50/p90</th><th>M7 a*/b* облака</th></tr>
+  ${refLine}
+  ${rows.map((r) => line(views[r.view]?.label ?? r.view, r)).join('\n  ')}
+</table>`;
+}
+
 // блок сцены: референс рядом с эталонным ракурсом, ниже — возмущённые
 function sceneBlock(name) {
   const sc = scenes[name];
@@ -50,6 +84,7 @@ function sceneBlock(name) {
   const refNote = ref ? 'референс (фото)' : 'референс недоступен (фото не в репозитории)';
   return `<section id="s-${esc(name)}">
   <h2>${esc(sc?.label ?? name)}</h2>
+  ${metricsTable(name)}
   <div class="pair">
     <figure><div class="ref">${ref ? `<img src="${ref}" alt="референс ${esc(name)}" loading="lazy">`
       : '<div class="noimg">нет файла</div>'}</div>
@@ -89,7 +124,14 @@ const html = `<!doctype html>
   figcaption { padding: 6px 2px 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   figcaption span { color: #dbe4ef; }
   figcaption small { color: #8b98a9; width: 100%; }
-  /* место под метрики похожести (#78): таблица по сцене над сеткой кадров */
+  /* таблица метрик похожести (#78) */
+  table.metrics { border-collapse: collapse; margin: 0 0 12px; font-variant-numeric: tabular-nums; }
+  table.metrics caption { text-align: left; color: #8b98a9; font-size: 12px; padding: 0 0 6px; }
+  table.metrics th, table.metrics td { padding: 3px 10px; border-bottom: 1px solid #223046;
+    text-align: right; white-space: nowrap; }
+  table.metrics th:first-child, table.metrics td:first-child { text-align: left; }
+  table.metrics th { color: #9fc0e8; font-weight: 600; }
+  table.metrics tr.refrow td { color: #e3b341; }
 </style>
 <h1>Стенд mvp_clouds2 — эталонные кадры</h1>
 <div class="sum">${verdict}<br>
