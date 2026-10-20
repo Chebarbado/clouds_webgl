@@ -12,3 +12,6 @@ __pycache__/
 mvp_clouds2/test/node_modules/
 mvp_clouds2/test/shots/
 mvp_clouds2/test/report/
+
+# локальные настройки Claude Code
+.claude/settings.local.json
